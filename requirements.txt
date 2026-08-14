@@ -1,0 +1,7 @@
+fastmcp
+crewai[google-genai]
+litellm
+qdrant-client
+fastembed
+python-dotenv
+mcp
