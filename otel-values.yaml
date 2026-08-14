@@ -1,0 +1,28 @@
+jaeger:
+  enabled: true
+
+components:
+  flagd:
+    env:
+      - name: FLAGD_PRODUCT_CATALOG_FAILURE
+        value: "true"
+      - name: FLAGD_RECOMMENDATION_CACHE_FAILURE
+        value: "true"
+
+opentelemetry-collector:
+  config:
+    processors:
+      tail_sampling:
+        decision_wait: 10s
+        num_traces: 10000
+        expected_new_traces_per_sec: 2000
+        policies:
+          - name: drop_errors_policy
+            type: status_code
+            status_code: {status_codes: [ERROR]}
+          - name: latency_policy
+            type: latency
+            latency: {threshold_ms: 1500}
+          - name: probabilistic_policy
+            type: probabilistic
+            probabilistic: {sampling_percentage: 5.0}

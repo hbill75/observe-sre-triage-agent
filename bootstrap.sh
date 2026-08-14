@@ -14,7 +14,7 @@ for cmd in kind kubectl helm docker; do
 done
 
 # 2. Create the Kind cluster
-echo "📦 Creating Kubernetes cluster 'sre-demo' using kind..."
+echo "📦 Checking Kubernetes cluster 'sre-demo'..."
 if kind get clusters | grep -q "^sre-demo$"; then
   echo "Cluster 'sre-demo' already exists. Skipping creation."
 else
@@ -33,50 +33,37 @@ echo "🏗️  Creating 'observability' namespace..."
 kubectl create namespace observability --dry-run=client -o yaml | kubectl apply -f -
 
 # 5. Install Qdrant (Vector Database)
-echo "🧠 Installing Qdrant..."
+echo "🧠 Installing Qdrant (15m timeout)..."
 helm upgrade --install qdrant qdrant/qdrant \
   --namespace observability \
   --set replicaCount=1 \
   --set resources.requests.memory="256Mi" \
+  --timeout 15m \
   --wait
 
 # 6. Install OpenLIT Stack (ClickHouse, Collector, UI)
-echo "🔭 Installing OpenLIT AI Observability Stack..."
+echo "🔭 Installing OpenLIT AI Observability Stack (15m timeout)..."
 helm upgrade --install openlit openlit/openlit \
   --namespace observability \
+  --set service.type=ClusterIP \
+  --timeout 15m \
   --wait
 
-# 7. Install OpenTelemetry Astronomy Shop (with simulated failures)
-echo "🛒 Installing OTel Astronomy Shop and Jaeger..."
-cat <<EOF > otel-values.yaml
-# Enable Jaeger as a sub-chart for trace storage
-observability:
-  jaeger:
-    enabled: true
+# 7. Install OpenTelemetry Astronomy Shop (with simulated failures and Tail Sampling)
+echo "🛒 Configuring OTel Astronomy Shop and Jaeger..."
 
-# Configure feature flags to simulate the exact errors our SRE agent will fix
-components:
-  flagd:
-    configMap:
-      create: true
-      data:
-        demo.flagd.json: |
-          {
-            "\$schema": "https://flagd.dev/schema/v0/flags.json",
-            "flags": {
-              "productCatalogFailure": {
-                "description": "Fail product catalog service to trigger Agent investigation",
-                "state": "ENABLED",
-                "variants": { "on": true, "off": false },
-                "defaultVariant": "on"
-              }
-            }
-          }
-EOF
+# Safety check to ensure the config file exists in the directory
+if [ ! -f "otel-values.yaml" ]; then
+    echo "❌ Error: otel-values.yaml not found in the current directory!"
+    echo "Please ensure the configuration file is present before running this script."
+    exit 1
+fi
 
+echo "🛒 Installing OTel Astronomy Shop (15m timeout)..."
 helm upgrade --install otel-demo open-telemetry/opentelemetry-demo \
   --namespace observability \
   -f otel-values.yaml \
+  --timeout 15m \
   --wait
 
 echo "✅ Environment Bootstrap Complete!"
