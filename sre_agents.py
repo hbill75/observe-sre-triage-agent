@@ -3,41 +3,98 @@
 
 import os
 from dotenv import load_dotenv
+
+load_dotenv()
+
+# ==========================================
+# 0. Initialize OpenLIT FIRST (Before Any Imports)
+# ==========================================
+os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4318"
+os.environ["OPENLIT_CAPTURE_MESSAGE_CONTENT"] = "true"
+
+import openlit
+openlit.init(
+    application_name="Autonomous-SRE-Team",
+    otlp_endpoint="http://localhost:4318",
+    environment="development",
+    capture_message_content=True
+)
+print("🔭 OpenLIT tracing enabled!")
+
+# ==========================================
+# 1. Imports & Bulletproof LiteLLM Monkeypatch Bridge
+# ==========================================
+from opentelemetry import trace
+tracer = trace.get_tracer("sre.autonomous.agents")
+
+import litellm
+
+original_completion = litellm.completion
+original_acompletion = litellm.acompletion
+
+def patched_completion(*args, **kwargs):
+    model = kwargs.get("model", args[0] if args else "unknown-model")
+    messages = kwargs.get("messages", args[1] if len(args) > 1 else [])
+    
+    with tracer.start_as_current_span(f"llm.call.{model}") as span:
+        span.set_attribute("gen_ai.system", "gemini")
+        span.set_attribute("gen_ai.request.model", str(model))
+        span.set_attribute("gen_ai.input.messages", str(messages))
+        span.set_attribute("gen_ai.prompt", str(messages))
+        
+        response = original_completion(*args, **kwargs)
+        
+        try:
+            content = response.choices[0].message.content
+            span.set_attribute("gen_ai.output.messages", str(content))
+            span.set_attribute("gen_ai.completion", str(content))
+        except Exception:
+            pass
+        return response
+
+async def patched_acompletion(*args, **kwargs):
+    model = kwargs.get("model", args[0] if args else "unknown-model")
+    messages = kwargs.get("messages", args[1] if len(args) > 1 else [])
+    
+    with tracer.start_as_current_span(f"llm.call.async.{model}") as span:
+        span.set_attribute("gen_ai.system", "gemini")
+        span.set_attribute("gen_ai.request.model", str(model))
+        span.set_attribute("gen_ai.input.messages", str(messages))
+        span.set_attribute("gen_ai.prompt", str(messages))
+        
+        response = await original_acompletion(*args, **kwargs)
+        
+        try:
+            content = response.choices[0].message.content
+            span.set_attribute("gen_ai.output.messages", str(content))
+            span.set_attribute("gen_ai.completion", str(content))
+        except Exception:
+            pass
+        return response
+
+litellm.completion = patched_completion
+litellm.acompletion = patched_acompletion
+
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
 from qdrant_client import QdrantClient
 from fastembed import TextEmbedding
 
-# Load API keys from .env
-load_dotenv()
-
 # ==========================================
-# 1. Initialize Clients & Models
+# 2. Initialize Clients & Models
 # ==========================================
-print("🔌 Connecting to Qdrant & Initializing Embedding Model...")
-qdrant = QdrantClient(url="http://localhost:6333")
-embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-
-# Initialize the Gemini LLM
 print("🧠 Initializing Gemini 3.6 Flash...")
 gemini_llm = LLM(
     model="gemini/gemini-3.6-flash", 
     api_key=os.environ.get("GEMINI_API_KEY")
 )
 
-# Initialize OpenLIT Tracing
-try:
-    import openlit
-    openlit.init(
-        application_name="Autonomous-SRE-Team",
-        otlp_endpoint="http://localhost:4318"
-    )
-    print("🔭 OpenLIT tracing enabled!")
-except ImportError:
-    pass
+print("🔌 Connecting to Qdrant & Initializing Embedding Model...")
+qdrant = QdrantClient(url="http://localhost:6333")
+embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
 # ==========================================
-# 2. Define Custom Tools for the Agents
+# 3. Define Custom Tools
 # ==========================================
 @tool("Fetch Open Incident Tickets")
 def fetch_tickets_tool() -> str:
@@ -47,88 +104,55 @@ def fetch_tickets_tool() -> str:
     for r in records:
         if r.payload.get("status") == "Open":
             open_tickets.append(f"Ticket ID: {r.payload.get('ticket_id')} | Impacted Services: {r.payload.get('service')} | Description: {r.payload.get('document')}")
-    
-    if not open_tickets:
-        return "No open tickets found."
-    return "\n".join(open_tickets)
+    return "\n".join(open_tickets) if open_tickets else "No open tickets found."
 
 @tool("Search SRE Runbooks")
 def search_runbooks_tool(query: str) -> str:
     """Search the SRE runbooks database for troubleshooting steps related to a specific service or error."""
-    # 1. Generate the vector
     query_vector = list(embedding_model.embed([query]))[0].tolist()
-    
-    # 2. The architecturally correct Qdrant SDK method
     results = qdrant.query_points(
         collection_name="runbooks",
         query=query_vector,
         limit=1
     )
-    
-    if results.points:
-        return results.points[0].payload.get("document", "No document found.")
-    return "No relevant runbook found for this query."
+    return results.points[0].payload.get("document", "No document found.") if results.points else "No relevant runbook found."
 
 # ==========================================
-# 3. Define the AI Agents
+# 4. Define Agents & Tasks
 # ==========================================
 dispatcher = Agent(
     role="Incident Dispatcher",
     goal="Identify the highest priority open ticket and extract the names of the failing microservices.",
-    backstory="You are a seasoned IT Operations Dispatcher. You monitor incoming alerts, quickly grasp which system is failing, and hand off exact service names to the engineering team.",
+    backstory="You are a seasoned IT Operations Dispatcher monitoring incoming alerts.",
     tools=[fetch_tickets_tool],
     llm=gemini_llm,
-    verbose=True,
-    allow_delegation=False,
-    max_iter=3,
-    max_execution_time=60
+    verbose=True
 )
 
 troubleshooter = Agent(
     role="SRE Troubleshooter",
     goal="Diagnose the root cause of service failures by reading runbooks and analyzing live Jaeger telemetry.",
-    backstory="You are an elite Site Reliability Engineer (SRE). You never guess. When handed a failing service, you immediately search the runbooks for known issues, then use the trace analysis tool to inspect live telemetry to confirm the exact bottleneck.",
+    backstory="You are an elite Site Reliability Engineer (SRE).",
     tools=[search_runbooks_tool],
-    # ---------------------------------------------------------
-    # THE PROPER MCP INTEGRATION:
-    # CrewAI will automatically launch mcp_server.py as a 
-    # separate process and fetch its tools dynamically via stdio!
-    # ---------------------------------------------------------
-    mcps=[
-        {
-            "command": "python",
-            "args": ["mcp_server.py"]
-        }
-    ],
+    mcps=[{"command": "python", "args": ["mcp_server.py"]}],
     llm=gemini_llm,
-    verbose=True,
-    allow_delegation=False,
-    max_iter=7,
-    max_execution_time=120
+    verbose=True
 )
 
-# ==========================================
-# 4. Define the Tasks
-# ==========================================
 triage_task = Task(
-    description="Fetch the open incident tickets. Identify the ticket containing 'Urgent' or 'High' priority HTTP 500 errors. Extract the exact name of the impacted service(s) from the ticket payload.",
-    expected_output="A brief summary containing the Ticket ID and the exact names of the impacted services to be investigated.",
+    description="Fetch the open incident tickets. Identify the ticket containing 'Urgent' or 'High' priority HTTP 500 errors. Extract the exact name of the impacted service(s).",
+    expected_output="Ticket ID and exact names of impacted services.",
     agent=dispatcher
 )
 
 rca_task = Task(
-    description=(
-        "Using the impacted service names identified by the Dispatcher, complete these two steps: "
-        "1. Search the SRE runbooks for troubleshooting instructions regarding those services. "
-        "2. Use the 'analyze_service_traces' tool on the impacted services to find the actual errors or latency in the live telemetry. "
-        "Write a final Root Cause Analysis (RCA) report based ONLY on what the trace tool returns."
-    ),
-    expected_output="A professional Root Cause Analysis (RCA) report detailing the failing service, the exact error counts or latency observed in the traces, and the recommended fix from the runbook.",
+    description="Search SRE runbooks and use 'analyze_service_traces' to write a final Root Cause Analysis (RCA) report.",
+    expected_output="Professional Root Cause Analysis (RCA) report.",
     agent=troubleshooter
 )
 
 # ==========================================
-# 5. Form the Crew and Execute!
+# 5. Form Crew & Execute with Tracing Wrapper
 # ==========================================
 sre_crew = Crew(
     agents=[dispatcher, troubleshooter],
@@ -137,9 +161,17 @@ sre_crew = Crew(
     verbose=True
 )
 
+@openlit.trace
+def execute_sre_workflow():
+    with tracer.start_as_current_span("crewai.reasoning_chain") as parent_span:
+        parent_span.set_attribute("crew.agents", "Incident Dispatcher, SRE Troubleshooter")
+        result = sre_crew.kickoff()
+        parent_span.set_attribute("gen_ai.completion", str(result))
+        return result
+
 if __name__ == "__main__":
     print("🚀 Initiating Autonomous SRE Incident Response...")
-    result = sre_crew.kickoff()
+    result = execute_sre_workflow()
     
     print("\n==================================================")
     print("🎯 FINAL ROOT CAUSE ANALYSIS REPORT")

@@ -1,6 +1,5 @@
 jaeger:
-  enabled: true
-
+  enabled: false
 components:
   flagd:
     env:
@@ -8,7 +7,6 @@ components:
         value: "true"
       - name: FLAGD_RECOMMENDATION_CACHE_FAILURE
         value: "true"
-
 opentelemetry-collector:
   config:
     processors:
@@ -26,3 +24,14 @@ opentelemetry-collector:
           - name: probabilistic_policy
             type: probabilistic
             probabilistic: {sampling_percentage: 5.0}
+    exporters:
+      otlp/standalone:
+        endpoint: jaeger-standalone.observability.svc.cluster.local:4317
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          exporters:
+            - otlp/standalone
+            - span_metrics
