@@ -1,7 +1,9 @@
 fastmcp
-crewai[google-genai]
+mcp
+crewai
 litellm
 qdrant-client
 fastembed
 python-dotenv
-mcp
+openlit
+pydantic

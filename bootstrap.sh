@@ -49,6 +49,11 @@ helm upgrade --install openlit openlit/openlit \
   --timeout 15m \
   --wait
 
+# 6.5. Install Jaeger Standalone
+
+echo "🔭 Deploying Standalone Jaeger..."
+kubectl apply -f jaeger-deploy.yaml
+
 # 7. Install OpenTelemetry Astronomy Shop (with simulated failures and Tail Sampling)
 echo "🛒 Configuring OTel Astronomy Shop and Jaeger..."
 

@@ -7,86 +7,41 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ==========================================
-# 0. Initialize OpenLIT FIRST (Before Any Imports)
+# 0. Initialize OpenLIT FIRST
 # ==========================================
 os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4318"
 os.environ["OPENLIT_CAPTURE_MESSAGE_CONTENT"] = "true"
 
 import openlit
+
 openlit.init(
     application_name="Autonomous-SRE-Team",
     otlp_endpoint="http://localhost:4318",
     environment="development",
-    capture_message_content=True
+    capture_message_content=True,
+    disable_batch=True
 )
 print("🔭 OpenLIT tracing enabled!")
 
 # ==========================================
-# 1. Imports & Bulletproof LiteLLM Monkeypatch Bridge
+# 1. Imports
 # ==========================================
 from opentelemetry import trace
-tracer = trace.get_tracer("sre.autonomous.agents")
-
-import litellm
-
-original_completion = litellm.completion
-original_acompletion = litellm.acompletion
-
-def patched_completion(*args, **kwargs):
-    model = kwargs.get("model", args[0] if args else "unknown-model")
-    messages = kwargs.get("messages", args[1] if len(args) > 1 else [])
-    
-    with tracer.start_as_current_span(f"llm.call.{model}") as span:
-        span.set_attribute("gen_ai.system", "gemini")
-        span.set_attribute("gen_ai.request.model", str(model))
-        span.set_attribute("gen_ai.input.messages", str(messages))
-        span.set_attribute("gen_ai.prompt", str(messages))
-        
-        response = original_completion(*args, **kwargs)
-        
-        try:
-            content = response.choices[0].message.content
-            span.set_attribute("gen_ai.output.messages", str(content))
-            span.set_attribute("gen_ai.completion", str(content))
-        except Exception:
-            pass
-        return response
-
-async def patched_acompletion(*args, **kwargs):
-    model = kwargs.get("model", args[0] if args else "unknown-model")
-    messages = kwargs.get("messages", args[1] if len(args) > 1 else [])
-    
-    with tracer.start_as_current_span(f"llm.call.async.{model}") as span:
-        span.set_attribute("gen_ai.system", "gemini")
-        span.set_attribute("gen_ai.request.model", str(model))
-        span.set_attribute("gen_ai.input.messages", str(messages))
-        span.set_attribute("gen_ai.prompt", str(messages))
-        
-        response = await original_acompletion(*args, **kwargs)
-        
-        try:
-            content = response.choices[0].message.content
-            span.set_attribute("gen_ai.output.messages", str(content))
-            span.set_attribute("gen_ai.completion", str(content))
-        except Exception:
-            pass
-        return response
-
-litellm.completion = patched_completion
-litellm.acompletion = patched_acompletion
-
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
 from qdrant_client import QdrantClient
 from fastembed import TextEmbedding
+
+tracer = trace.get_tracer("sre.autonomous.agents")
 
 # ==========================================
 # 2. Initialize Clients & Models
 # ==========================================
 print("🧠 Initializing Gemini 3.6 Flash...")
 gemini_llm = LLM(
-    model="gemini/gemini-3.6-flash", 
-    api_key=os.environ.get("GEMINI_API_KEY")
+    model="gemini/gemini-3.6-flash",
+    api_key=os.environ.get("GEMINI_API_KEY"),
+    temperature=0.1
 )
 
 print("🔌 Connecting to Qdrant & Initializing Embedding Model...")
@@ -98,24 +53,34 @@ embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 # ==========================================
 @tool("Fetch Open Incident Tickets")
 def fetch_tickets_tool() -> str:
-    """Fetch all open incident tickets from the database."""
+    """Fetch all open incident tickets from the database. Takes no arguments."""
     records, _ = qdrant.scroll(collection_name="tickets", limit=5, with_payload=True)
     open_tickets = []
     for r in records:
         if r.payload.get("status") == "Open":
-            open_tickets.append(f"Ticket ID: {r.payload.get('ticket_id')} | Impacted Services: {r.payload.get('service')} | Description: {r.payload.get('document')}")
+            open_tickets.append(
+                f"Ticket ID: {r.payload.get('ticket_id')} | Impacted Services: {r.payload.get('service')} | Description: {r.payload.get('document')}"
+            )
     return "\n".join(open_tickets) if open_tickets else "No open tickets found."
 
 @tool("Search SRE Runbooks")
 def search_runbooks_tool(query: str) -> str:
-    """Search the SRE runbooks database for troubleshooting steps related to a specific service or error."""
+    """Search the SRE runbooks database for troubleshooting steps related to a specific service or error.
+
+    Args:
+        query: The error message, symptom, or service name to look up in the runbooks.
+    """
     query_vector = list(embedding_model.embed([query]))[0].tolist()
     results = qdrant.query_points(
         collection_name="runbooks",
         query=query_vector,
         limit=1
     )
-    return results.points[0].payload.get("document", "No document found.") if results.points else "No relevant runbook found."
+    return (
+        results.points[0].payload.get("document", "No document found.")
+        if results.points
+        else "No relevant runbook found."
+    )
 
 # ==========================================
 # 4. Define Agents & Tasks
