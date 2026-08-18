@@ -42,12 +42,12 @@ helm upgrade --install qdrant qdrant/qdrant \
   --wait
 
 # 6. Install OpenLIT Stack (ClickHouse, Collector, UI)
-echo "🔭 Installing OpenLIT AI Observability Stack (15m timeout)..."
-helm upgrade --install openlit openlit/openlit \
-  --namespace observability \
-  --set service.type=ClusterIP \
-  --timeout 15m \
-  --wait
+# echo "🔭 Installing OpenLIT AI Observability Stack (15m timeout)..."
+# helm upgrade --install openlit openlit/openlit \
+#  --namespace observability \
+#  --set service.type=ClusterIP \
+#  --timeout 15m \
+#  --wait
 
 # 6.5. Install Jaeger Standalone
 
@@ -68,7 +68,7 @@ echo "🛒 Installing OTel Astronomy Shop (15m timeout)..."
 helm upgrade --install otel-demo open-telemetry/opentelemetry-demo \
   --namespace observability \
   -f otel-values.yaml \
-  --timeout 15m \
+  --timeout 20m \
   --wait
 
 echo "✅ Environment Bootstrap Complete!"

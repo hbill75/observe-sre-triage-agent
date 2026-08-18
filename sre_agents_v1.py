@@ -17,7 +17,7 @@ if not os.getenv("GEMINI_API_KEY"):
     sys.exit(1)
 
 # =====================================================================
-# 2. Pure OpenTelemetry Setup with Session Context
+# 2. Pure OpenTelemetry Setup (Direct to OpenLIT on 4318)
 # =====================================================================
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
@@ -25,15 +25,9 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 
-INCIDENT_ID = "INC-1042"
-SESSION_ID = f"INCIDENT-{INCIDENT_ID}"
-
-# Attaching session.id at the Resource level ensures all spans inherit the thread ID
 resource = Resource.create({
     "service.name": "Autonomous-SRE-Team",
-    "environment": "development",
-    "session.id": SESSION_ID,
-    "user.id": "sre-oncall-engineer"
+    "environment": "development"
 })
 
 provider = TracerProvider(resource=resource)
@@ -66,13 +60,9 @@ class QdrantRAGTool(BaseTool):
 
     def _run(self, query: str, collection: str = "runbooks") -> str:
         with tracer.start_as_current_span("tool.qdrant_query") as span:
-            span.set_attribute("openlit.span.type", "tool")
-            span.set_attribute("session.id", SESSION_ID)
-            span.set_attribute("gen_ai.tool.name", "query_qdrant_knowledgebase")
-            span.set_attribute("gen_ai.tool.input", json.dumps({"query": query, "collection": collection}))
             span.set_attribute("db.system", "qdrant")
             span.set_attribute("db.collection.name", collection)
-            
+            span.set_attribute("qdrant.query", query)
             try:
                 client = QdrantClient(url="http://localhost:6333")
                 embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
@@ -86,17 +76,12 @@ class QdrantRAGTool(BaseTool):
                 search_results = response.points
 
                 if not search_results:
-                    res_str = f"No relevant records found in collection '{collection}' for query: {query}"
-                    span.set_attribute("gen_ai.tool.output", res_str)
-                    return res_str
+                    return f"No relevant records found in collection '{collection}' for query: {query}"
 
                 formatted = []
                 for hit in search_results:
                     formatted.append(f"--- Result (Score: {hit.score:.3f}) ---\nMetadata: {json.dumps(hit.payload, indent=2)}")
-                
-                output_str = "\n\n".join(formatted)
-                span.set_attribute("gen_ai.tool.output", output_str)
-                return output_str
+                return "\n\n".join(formatted)
             except Exception as e:
                 span.record_exception(e)
                 return f"Error querying Qdrant: {str(e)}"
@@ -113,12 +98,8 @@ class JaegerTraceTool(BaseTool):
 
     def _run(self, service: str, limit: int = 5) -> str:
         with tracer.start_as_current_span("tool.jaeger_query") as span:
-            span.set_attribute("openlit.span.type", "tool")
-            span.set_attribute("session.id", SESSION_ID)
-            span.set_attribute("gen_ai.tool.name", "query_jaeger_traces")
-            span.set_attribute("gen_ai.tool.input", json.dumps({"service": service, "limit": limit}))
             span.set_attribute("service.name", service)
-            
+            span.set_attribute("jaeger.limit", limit)
             try:
                 params = urllib.parse.urlencode({"service": service, "limit": limit})
                 url = f"http://localhost:16686/api/traces?{params}"
@@ -131,9 +112,7 @@ class JaegerTraceTool(BaseTool):
 
                 traces = data.get("data", [])
                 if not traces:
-                    res_str = f"No traces found for service '{service}' in Jaeger."
-                    span.set_attribute("gen_ai.tool.output", res_str)
-                    return res_str
+                    return f"No traces found for service '{service}' in Jaeger."
 
                 summary = []
                 for trace_obj in traces:
@@ -144,9 +123,7 @@ class JaegerTraceTool(BaseTool):
                         if duration_ms > 1000 or any(t.get("key") == "error" for t in s.get("tags", [])):
                             summary.append(f"Trace ID: {trace_id} | Span: {op_name} | Duration: {duration_ms:.2f}ms | Tags: {json.dumps(s.get('tags', []))}")
                 
-                output_str = "\n".join(summary[:10]) if summary else f"All {len(traces)} traces executed within normal thresholds."
-                span.set_attribute("gen_ai.tool.output", output_str)
-                return output_str
+                return "\n".join(summary[:10]) if summary else f"All {len(traces)} traces executed within normal thresholds."
             except Exception as e:
                 span.record_exception(e)
                 return f"Error querying Jaeger: {str(e)}"
@@ -200,26 +177,24 @@ rca_task = Task(
 )
 
 # =====================================================================
-# 6. Workflow Execution
+# 6. Workflow Execution with OpenLIT Chat-Compliant Spans
 # =====================================================================
 def run_sre_workflow(incident_id: str):
     print(f"\n🚀 Starting Autonomous SRE Investigation for {incident_id}...\n")
     
     with tracer.start_as_current_span("execute_sre_workflow") as root_span:
         root_span.set_attribute("incident.id", incident_id)
-        root_span.set_attribute("session.id", SESSION_ID)
         root_span.set_attribute("environment", "development")
-
-        # Main LLM Chat Completion Span
+        
+        # Child Span for the Agent Investigation (Populates OpenLIT Chat View)
         with tracer.start_as_current_span("crew.reasoning.chain") as genai_span:
             genai_span.set_attribute("openlit.span.type", "llm")
-            genai_span.set_attribute("gen_ai.type", "chat")
             genai_span.set_attribute("gen_ai.operation.name", "chat")
-            genai_span.set_attribute("session.id", SESSION_ID)
             genai_span.set_attribute("gen_ai.system", "crewai")
             genai_span.set_attribute("gen_ai.request.model", "gemini/gemini-3.6-flash")
             genai_span.set_attribute("crew.agents", "Incident Dispatcher, SRE Troubleshooter")
             
+            # Format input prompt as JSON array
             prompt_payload = [
                 {"role": "system", "content": f"You are a collaborative SRE team consisting of '{dispatcher_agent.role}' and '{troubleshooter_agent.role}'."},
                 {"role": "user", "content": f"Investigate active incident {incident_id}. Triage symptoms from Qdrant, analyze traces in Jaeger, and formulate a complete RCA report."}
@@ -235,6 +210,7 @@ def run_sre_workflow(incident_id: str):
 
             result = sre_crew.kickoff(inputs={"incident_id": incident_id})
             
+            # Format completion as JSON array for OpenLIT Chat Tab
             completion_payload = [
                 {"role": "assistant", "content": str(result)}
             ]
@@ -249,9 +225,10 @@ def run_sre_workflow(incident_id: str):
             return result
 
 if __name__ == "__main__":
-    final_report = run_sre_workflow(INCIDENT_ID)
+    incident_to_investigate = "INC-1042"
+    final_report = run_sre_workflow(incident_to_investigate)
     
-    # Flush all traces to OpenLIT before exit
+    # Flush all traces to OpenLIT before process exits
     provider.shutdown()
 
     print("\n" + "="*80)
