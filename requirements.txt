@@ -1,9 +1,9 @@
-fastmcp
-mcp
-crewai
-litellm
-qdrant-client
-fastembed
-python-dotenv
-openlit
-pydantic
+# requirements.txt
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-google-genai>=2.0.0
+traceloop-sdk>=0.62.0
+qdrant-client>=1.10.0
+fastembed>=0.3.0
+python-dotenv>=1.0.0
+pydantic>=2.0.0

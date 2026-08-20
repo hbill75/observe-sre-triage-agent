@@ -1,260 +1,317 @@
 import os
+import time
 import sys
 import json
+import logging
+import warnings
 import urllib.parse
 import urllib.request
-from typing import Type
+from typing import TypedDict, List, Any
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+
+# 1. Target ONLY the cosmetic Google SDK logger (preserves all real Python warnings)
+logging.getLogger("google.genai").setLevel(logging.ERROR)
+
 from qdrant_client import QdrantClient
 from fastembed import TextEmbedding
 
-# 1. Load environment variables
+# 3. LangChain & LangGraph Imports
+from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langgraph.graph import StateGraph, START, END
+
+# 4. Rich Terminal Formatting Imports
+from rich.console import Console
+from rich.panel import Panel
+from rich.markdown import Markdown
+from rich.theme import Theme
+
+# 5. Traceloop Auto-Instrumentation
+from traceloop.sdk import Traceloop
+
 load_dotenv()
 
 if not os.getenv("GEMINI_API_KEY"):
     print("❌ Error: GEMINI_API_KEY is not set.")
     sys.exit(1)
 
-# =====================================================================
-# 2. Pure OpenTelemetry Setup with Session Context
-# =====================================================================
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.resources import Resource
-
-INCIDENT_ID = "INC-1042"
-SESSION_ID = f"INCIDENT-{INCIDENT_ID}"
-
-# Attaching session.id at the Resource level ensures all spans inherit the thread ID
-resource = Resource.create({
-    "service.name": "Autonomous-SRE-Team",
-    "environment": "development",
-    "session.id": SESSION_ID,
-    "user.id": "sre-oncall-engineer"
-})
-
-provider = TracerProvider(resource=resource)
-exporter = OTLPSpanExporter(endpoint="http://127.0.0.1:4318/v1/traces")
-provider.add_span_processor(BatchSpanProcessor(exporter))
-trace.set_tracer_provider(provider)
-
-tracer = trace.get_tracer("sre-workflow-tracer")
-
-# =====================================================================
-# 3. CrewAI LLM & Diagnostic Tools Setup
-# =====================================================================
-from crewai import Agent, Crew, Process, Task, LLM
-from crewai.tools import BaseTool
-
-llm = LLM(
-    model="gemini/gemini-3.6-flash",
-    api_key=os.getenv("GEMINI_API_KEY"),
-    temperature=0.2
+Traceloop.init(
+    app_name="Autonomous-SRE-Team",
+    api_endpoint="http://127.0.0.1:4318",
+    disable_batch=True
 )
 
-class QdrantQueryInput(BaseModel):
-    query: str = Field(description="Search query to find relevant SRE runbooks or past incident tickets.")
-    collection: str = Field(default="runbooks", description="Collection to query: 'runbooks' or 'tickets'.")
+# LLM Initialization
+llm = ChatGoogleGenerativeAI(
+    model="gemini-3.6-flash",
+    google_api_key=os.getenv("GEMINI_API_KEY")
+)
 
-class QdrantRAGTool(BaseTool):
-    name: str = "Query Qdrant Knowledgebase"
-    description: str = "Searches the vector database for incident runbooks, architecture context, or historical incident tickets."
-    args_schema: Type[BaseModel] = QdrantQueryInput
+def get_text_content(content: Any) -> str:
+    """Helper to convert string or list-based message content into a clean string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, str):
+                text_parts.append(item)
+            elif isinstance(item, dict) and "text" in item:
+                text_parts.append(item["text"])
+            elif hasattr(item, "text"):
+                text_parts.append(item.text)
+            else:
+                text_parts.append(str(item))
+        return "\n".join(text_parts)
+    return str(content)
 
-    def _run(self, query: str, collection: str = "runbooks") -> str:
-        with tracer.start_as_current_span("tool.qdrant_query") as span:
-            span.set_attribute("openlit.span.type", "tool")
-            span.set_attribute("session.id", SESSION_ID)
-            span.set_attribute("gen_ai.tool.name", "query_qdrant_knowledgebase")
-            span.set_attribute("gen_ai.tool.input", json.dumps({"query": query, "collection": collection}))
-            span.set_attribute("db.system", "qdrant")
-            span.set_attribute("db.collection.name", collection)
-            
-            try:
-                client = QdrantClient(url="http://localhost:6333")
-                embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-                query_vector = list(embedding_model.embed([query]))[0].tolist()
+# =====================================================================
+# 3. Diagnostic Functions (Qdrant Knowledgebase & Jaeger Traces)
+# =====================================================================
+def query_qdrant(query: str, collection: str = "runbooks") -> str:
+    """Searches Qdrant for incident runbooks or historical tickets."""
+    try:
+        client = QdrantClient(url="http://localhost:6333", check_compatibility=False)
+        embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        query_vector = list(embedding_model.embed([query]))[0].tolist()
 
-                response = client.query_points(
-                    collection_name=collection,
-                    query=query_vector,
-                    limit=3
-                )
-                search_results = response.points
+        response = client.query_points(
+            collection_name=collection,
+            query=query_vector,
+            limit=3
+        )
+        points = response.points
+        if not points:
+            return f"No relevant records found in collection '{collection}' for query: {query}"
 
-                if not search_results:
-                    res_str = f"No relevant records found in collection '{collection}' for query: {query}"
-                    span.set_attribute("gen_ai.tool.output", res_str)
-                    return res_str
+        formatted = []
+        for hit in points:
+            formatted.append(f"--- Score: {hit.score:.3f} ---\n{json.dumps(hit.payload, indent=2)}")
+        return "\n\n".join(formatted)
+    except Exception as e:
+        return f"Error querying Qdrant: {str(e)}"
 
-                formatted = []
-                for hit in search_results:
-                    formatted.append(f"--- Result (Score: {hit.score:.3f}) ---\nMetadata: {json.dumps(hit.payload, indent=2)}")
+def query_jaeger(service: str, limit: int = 5, lookback_seconds: int = 120) -> str:
+    """Queries Jaeger strictly for traces captured within the lookback window."""
+    try:
+        # Calculate lookback in microseconds for Jaeger API
+        end_time_us = int(time.time() * 1_000_000)
+        start_time_us = end_time_us - (lookback_seconds * 1_000_000)
+
+        params = urllib.parse.urlencode({
+            "service": service,
+            "limit": limit,
+            "start": start_time_us,
+            "end": end_time_us
+        })
+        url = f"http://localhost:16686/api/traces?{params}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status != 200:
+                return f"Failed to retrieve traces: HTTP {response.status}"
+            data = json.loads(response.read().decode())
+
+        traces = data.get("data", [])
+        if not traces:
+            return f"No traces found for service '{service}' in the last {lookback_seconds}s."
+
+        summary = []
+        for trace_obj in traces:
+            trace_id = trace_obj.get("traceID")
+            for s in trace_obj.get("spans", []):
+                duration_ms = s.get("duration", 0) / 1000.0
+                op_name = s.get("operationName", "unknown")
+                raw_tags = s.get("tags", [])
                 
-                output_str = "\n\n".join(formatted)
-                span.set_attribute("gen_ai.tool.output", output_str)
-                return output_str
-            except Exception as e:
-                span.record_exception(e)
-                return f"Error querying Qdrant: {str(e)}"
-
-
-class JaegerTraceInput(BaseModel):
-    service: str = Field(description="Service name to inspect (e.g., 'frontend', 'recommendation', 'productcatalogservice').")
-    limit: int = Field(default=5, description="Number of traces to fetch.")
-
-class JaegerTraceTool(BaseTool):
-    name: str = "Query Jaeger Traces"
-    description: str = "Queries standalone Jaeger for distributed traces and bottleneck spans."
-    args_schema: Type[BaseModel] = JaegerTraceInput
-
-    def _run(self, service: str, limit: int = 5) -> str:
-        with tracer.start_as_current_span("tool.jaeger_query") as span:
-            span.set_attribute("openlit.span.type", "tool")
-            span.set_attribute("session.id", SESSION_ID)
-            span.set_attribute("gen_ai.tool.name", "query_jaeger_traces")
-            span.set_attribute("gen_ai.tool.input", json.dumps({"service": service, "limit": limit}))
-            span.set_attribute("service.name", service)
-            
-            try:
-                params = urllib.parse.urlencode({"service": service, "limit": limit})
-                url = f"http://localhost:16686/api/traces?{params}"
-                req = urllib.request.Request(url, headers={"Accept": "application/json"})
+                sanitized_tags = [
+                    t for t in raw_tags 
+                    if not t.get("key", "").startswith("demo.")
+                ]
                 
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    if response.status != 200:
-                        return f"Failed to retrieve traces: HTTP {response.status}"
-                    data = json.loads(response.read().decode())
-
-                traces = data.get("data", [])
-                if not traces:
-                    res_str = f"No traces found for service '{service}' in Jaeger."
-                    span.set_attribute("gen_ai.tool.output", res_str)
-                    return res_str
-
-                summary = []
-                for trace_obj in traces:
-                    trace_id = trace_obj.get("traceID")
-                    for s in trace_obj.get("spans", []):
-                        duration_ms = s.get("duration", 0) / 1000.0
-                        op_name = s.get("operationName", "unknown")
-                        if duration_ms > 1000 or any(t.get("key") == "error" for t in s.get("tags", [])):
-                            summary.append(f"Trace ID: {trace_id} | Span: {op_name} | Duration: {duration_ms:.2f}ms | Tags: {json.dumps(s.get('tags', []))}")
-                
-                output_str = "\n".join(summary[:10]) if summary else f"All {len(traces)} traces executed within normal thresholds."
-                span.set_attribute("gen_ai.tool.output", output_str)
-                return output_str
-            except Exception as e:
-                span.record_exception(e)
-                return f"Error querying Jaeger: {str(e)}"
-
-qdrant_tool = QdrantRAGTool()
-jaeger_tool = JaegerTraceTool()
+                if duration_ms > 1000 or any(t.get("key") == "error" for t in raw_tags):
+                    summary.append(
+                        f"Trace ID: {trace_id} | Span: {op_name} | "
+                        f"Duration: {duration_ms:.2f}ms | Tags: {json.dumps(sanitized_tags)}"
+                    )
+        
+        return "\n".join(summary[:10]) if summary else f"All {len(traces)} traces in the last {lookback_seconds}s executed within normal thresholds."
+    except Exception as e:
+        return f"Error querying Jaeger: {str(e)}"
 
 # =====================================================================
-# 4. Agent Definitions
+# 4. State Definition & LangGraph Agent Nodes
 # =====================================================================
-dispatcher_agent = Agent(
-    role="Incident Dispatcher",
-    goal="Triage alert {incident_id} and retrieve historical ticket context and runbooks.",
-    backstory="You are an elite SRE dispatcher specializing in incident categorization and runbook alignment.",
-    tools=[qdrant_tool],
-    llm=llm,
-    verbose=True
-)
+class SREState(TypedDict):
+    incident_id: str
+    impacted_services: List[str]
+    triage_summary: str
+    telemetry_findings: str
+    final_rca_report: str
 
-troubleshooter_agent = Agent(
-    role="SRE Troubleshooter",
-    goal="Investigate live telemetry, trace bottlenecks via Jaeger, determine root cause, and synthesize an RCA report.",
-    backstory="You are a senior site reliability engineer specializing in distributed tracing and microservice failure domains.",
-    tools=[jaeger_tool, qdrant_tool],
-    llm=llm,
-    verbose=True
-)
+def dispatcher_node(state: SREState) -> dict:
+    """Triage alert context and retrieve runbook guidelines from Qdrant[cite: 3]."""
+    incident_id = state["incident_id"]
+    print(f"📋 [Dispatcher Node] Triaging incident {incident_id}...")
 
-# =====================================================================
-# 5. Task Definitions
-# =====================================================================
-triage_task = Task(
-    description=(
-        "1. Query the 'tickets' collection in Qdrant for context on incident '{incident_id}'.\n"
-        "2. Query the 'runbooks' collection in Qdrant for troubleshooting steps related to the affected services.\n"
-        "3. Synthesize the initial incident context, identified symptom patterns, and runbook guidelines."
-    ),
-    expected_output="A structured triage summary detailing affected service symptoms and runbook diagnostic steps.",
-    agent=dispatcher_agent
-)
+    ticket_context = query_qdrant(query=f"Incident {incident_id}", collection="tickets")
+    runbook_context = query_qdrant(query=f"Troubleshooting guidelines for {incident_id}", collection="runbooks")
 
-rca_task = Task(
-    description=(
-        "1. Using the triage findings, query Jaeger traces for the impacted services.\n"
-        "2. Identify specific high-latency spans, operation names, trace IDs, and downstream dependency failures.\n"
-        "3. Cross-reference the trace findings with runbook recommendations.\n"
-        "4. Generate a complete Root Cause Analysis (RCA) report in Markdown format with Executive Summary, Telemetry Analysis, Root Cause, and Action Items."
-    ),
-    expected_output="A complete, professional Incident RCA report formatted in clean Markdown.",
-    agent=troubleshooter_agent
-)
-
-# =====================================================================
-# 6. Workflow Execution
-# =====================================================================
-def run_sre_workflow(incident_id: str):
-    print(f"\n🚀 Starting Autonomous SRE Investigation for {incident_id}...\n")
+    prompt = [
+        SystemMessage(content=(
+            "You are an elite SRE dispatcher specializing in incident categorization and runbook alignment[cite: 3]. "
+            "Analyze the ticket context and runbook guidelines to identify impacted microservices and triage the issue."
+        )),
+        HumanMessage(content=(
+            f"Incident ID: {incident_id}\n\n"
+            f"Ticket Context from Qdrant:\n{ticket_context}\n\n"
+            f"Runbook Context from Qdrant:\n{runbook_context}\n\n"
+            "Instructions:\n"
+            "1. List all affected service names (e.g., 'frontend', 'recommendation', 'productcatalogservice', 'checkoutservice')[cite: 3, 4].\n"
+            "2. Summarize observed symptoms.\n"
+            "3. State the recommended runbook troubleshooting steps."
+        ))
+    ]
     
-    with tracer.start_as_current_span("execute_sre_workflow") as root_span:
-        root_span.set_attribute("incident.id", incident_id)
-        root_span.set_attribute("session.id", SESSION_ID)
-        root_span.set_attribute("environment", "development")
+    raw_response = llm.invoke(prompt)
+    triage_text = get_text_content(raw_response.content)
+    
+    known_services = [
+        "frontend", "recommendation", "productcatalogservice", 
+        "checkoutservice", "cartservice", "paymentservice", "emailservice"
+    ]
+    detected_services = [svc for svc in known_services if svc in triage_text.lower()]
+    if not detected_services:
+        detected_services = ["frontend"]
 
-        # Main LLM Chat Completion Span
-        with tracer.start_as_current_span("crew.reasoning.chain") as genai_span:
-            genai_span.set_attribute("openlit.span.type", "llm")
-            genai_span.set_attribute("gen_ai.type", "chat")
-            genai_span.set_attribute("gen_ai.operation.name", "chat")
-            genai_span.set_attribute("session.id", SESSION_ID)
-            genai_span.set_attribute("gen_ai.system", "crewai")
-            genai_span.set_attribute("gen_ai.request.model", "gemini/gemini-3.6-flash")
-            genai_span.set_attribute("crew.agents", "Incident Dispatcher, SRE Troubleshooter")
-            
-            prompt_payload = [
-                {"role": "system", "content": f"You are a collaborative SRE team consisting of '{dispatcher_agent.role}' and '{troubleshooter_agent.role}'."},
-                {"role": "user", "content": f"Investigate active incident {incident_id}. Triage symptoms from Qdrant, analyze traces in Jaeger, and formulate a complete RCA report."}
-            ]
-            genai_span.set_attribute("gen_ai.prompt", json.dumps(prompt_payload))
+    return {
+        "impacted_services": detected_services,
+        "triage_summary": triage_text
+    }
 
-            sre_crew = Crew(
-                agents=[dispatcher_agent, troubleshooter_agent],
-                tasks=[triage_task, rca_task],
-                process=Process.sequential,
-                verbose=True
-            )
+def troubleshooter_node(state: SREState) -> dict:
+    """Investigate Jaeger traces and generate the final RCA report[cite: 3]."""
+    incident_id = state["incident_id"]
+    triage_summary = state["triage_summary"]
+    services = state["impacted_services"]
+    
+    print(f"🔍 [Troubleshooter Node] Analyzing Jaeger traces for: {', '.join(services)}...")
 
-            result = sre_crew.kickoff(inputs={"incident_id": incident_id})
-            
-            completion_payload = [
-                {"role": "assistant", "content": str(result)}
-            ]
-            genai_span.set_attribute("gen_ai.completion", json.dumps(completion_payload))
-            
-            # Token usage breakdown
-            genai_span.set_attribute("gen_ai.usage.total_tokens", 3420)
-            genai_span.set_attribute("gen_ai.usage.prompt_tokens", 2150)
-            genai_span.set_attribute("gen_ai.usage.completion_tokens", 1270)
-            
-            root_span.set_attribute("rca.status", "completed")
-            return result
+    telemetry_dump = []
+    for svc in services:
+        traces = query_jaeger(service=svc, limit=5)
+        telemetry_dump.append(f"=== Service: {svc} ===\n{traces}")
+    telemetry_str = "\n\n".join(telemetry_dump)
+
+    prompt = [
+        SystemMessage(content=(
+            "You are a senior Site Reliability Engineer specializing in distributed tracing and microservice root cause analysis[cite: 3]. "
+            "Synthesize an incident Root Cause Analysis (RCA) report formatted in Markdown with the following sections:\n"
+            "- Executive Summary\n"
+            "- Telemetry Analysis (include trace IDs, latency metrics, and error spans)\n"
+            "- Root Cause Identification\n"
+            "- Immediate & Long-term Action Items"
+        )),
+        HumanMessage(content=(
+            f"Incident ID: {incident_id}\n\n"
+            f"Triage Assessment:\n{triage_summary}\n\n"
+            f"Live Jaeger Trace Telemetry:\n{telemetry_str}\n\n"
+            "Produce the final RCA report."
+        ))
+    ]
+
+    raw_response = llm.invoke(prompt)
+    rca_text = get_text_content(raw_response.content)
+
+    return {
+        "telemetry_findings": telemetry_str,
+        "final_rca_report": rca_text
+    }
+
+# =====================================================================
+# 5. Build and Compile the Workflow
+# =====================================================================
+workflow = StateGraph(SREState)
+workflow.add_node("dispatcher", dispatcher_node)
+workflow.add_node("troubleshooter", troubleshooter_node)
+
+workflow.add_edge(START, "dispatcher")
+workflow.add_edge("dispatcher", "troubleshooter")
+workflow.add_edge("troubleshooter", END)
+
+sre_graph = workflow.compile()
+
+# =====================================================================
+# 6. Execution Entry Point
+# =====================================================================
+from rich.console import Console
+from rich.panel import Panel
+from rich.markdown import Markdown
+from rich.theme import Theme
+
+# Custom terminal color theme matching agent roles
+custom_theme = Theme({
+    "dispatcher": "bold cyan",
+    "troubleshooter": "bold magenta",
+    "tool": "bold yellow",
+    "success": "bold green",
+    "incident": "bold red"
+})
+console = Console(theme=custom_theme)
+
+def run_sre_workflow(incident_id: str) -> str:
+    console.print(Panel(
+        f"[incident]🔥 Active SRE Investigation Initialized[/incident]\n[bold white]Incident Target:[/bold white] {incident_id}",
+        border_style="red",
+        expand=False
+    ))
+    
+    Traceloop.set_association_properties({
+        "session_id": incident_id,
+        "incident_id": incident_id,
+        "user_id": "sre-operator"
+    })
+
+    initial_state: SREState = {
+        "incident_id": incident_id,
+        "impacted_services": [],
+        "triage_summary": "",
+        "telemetry_findings": "",
+        "final_rca_report": ""
+    }
+
+    final_report = ""
+
+    # Stream state updates node-by-node as they finish execution
+    for update in sre_graph.stream(initial_state, stream_mode="updates"):
+        for node_name, node_output in update.items():
+            if node_name == "dispatcher":
+                services = ", ".join(node_output.get("impacted_services", []))
+                console.print(Panel(
+                    Markdown(node_output["triage_summary"]),
+                    title=f"[dispatcher]🤖 Agent: Incident Dispatcher[/dispatcher] | Services Flagged: [yellow]{services}[/yellow]",
+                    subtitle="[dim]Qdrant Triage Complete[/dim]",
+                    border_style="cyan"
+                ))
+
+            elif node_name == "troubleshooter":
+                final_report = node_output["final_rca_report"]
+                console.print(Panel(
+                    "[bold green]✓ Jaeger Traces Parsed & Synthesized[/bold green]\n[dim]Telemetry matched against runbook constraints.[/dim]",
+                    title="[troubleshooter]🔍 Agent: SRE Troubleshooter[/troubleshooter]",
+                    border_style="magenta"
+                ))
+
+    return final_report
 
 if __name__ == "__main__":
-    final_report = run_sre_workflow(INCIDENT_ID)
-    
-    # Flush all traces to OpenLIT before exit
-    provider.shutdown()
+    incident_to_investigate = "INC-1045"
+    report = run_sre_workflow(incident_to_investigate)
 
-    print("\n" + "="*80)
-    print("FINAL INVESTIGATION REPORT:")
-    print("="*80)
-    print(final_report)
+    console.print("\n")
+    console.print(Panel(
+        Markdown(report),
+        title="[success]📋 FINAL ROOT CAUSE ANALYSIS (RCA)[/success]",
+        border_style="green",
+        padding=(1, 2)
+    ))
