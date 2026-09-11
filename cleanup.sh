@@ -1,5 +1,5 @@
 #!/bin/bash
-# cleanup.sh - Completely removes the AI SRE Observability Demo environment
+# cleanup.sh - Removes ephemeral demo resources while preserving OpenLIT history
 
 echo "🧹 Starting cleanup process..."
 
@@ -11,7 +11,7 @@ else
   echo "ℹ️  Cluster 'sre-demo' does not exist or was already deleted."
 fi
 
-# 2. Kill any lingering port-forward processes
+# 2. Kill lingering port-forward processes
 echo "🔌 Cleaning up background port-forwarding processes..."
 PIDS=$(pgrep -f "kubectl port-forward")
 if [ -n "$PIDS" ]; then
@@ -22,6 +22,7 @@ else
 fi
 
 echo "========================================================="
-echo "✅ Cleanup complete! Your local environment is clean."
-echo "To rebuild the environment, run: ./bootstrap.sh"
+echo "✅ Ephemeral cluster resources cleaned up!"
+echo "ℹ️  Persistent OpenLIT/ClickHouse containers in OrbStack remain intact."
+echo "   (To destroy OpenLIT data: docker compose -f docker-compose.openlit.yaml down -v)"
 echo "========================================================="

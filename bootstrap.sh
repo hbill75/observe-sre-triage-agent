@@ -1,5 +1,5 @@
 #!/bin/bash
-# bootstrap.sh - Sets up the AI SRE Observability Demo locally
+# bootstrap.sh - Sets up the AI SRE Observability Demo environment
 
 set -e
 
@@ -13,7 +13,16 @@ for cmd in kind kubectl helm docker; do
   fi
 done
 
-# 2. Create the Kind cluster
+# 2. Verify persistent OpenLIT stack is running in OrbStack / Docker
+echo "🔍 Checking OpenLIT stack in OrbStack..."
+if ! docker ps | grep -q "openlit-server"; then
+  echo "⚠️  OpenLIT is not running in Docker. Starting it now via docker compose..."
+  docker compose -f docker-compose.openlit.yaml up -d
+else
+  echo "✅ Persistent OpenLIT stack detected."
+fi
+
+# 3. Create the Kind cluster
 echo "📦 Checking Kubernetes cluster 'sre-demo'..."
 if kind get clusters | grep -q "^sre-demo$"; then
   echo "Cluster 'sre-demo' already exists. Skipping creation."
@@ -21,18 +30,17 @@ else
   kind create cluster --name sre-demo
 fi
 
-# 3. Add & Update Helm Repositories
+# 4. Add & Update Helm Repositories
 echo "📥 Configuring Helm repositories..."
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
-helm repo add openlit https://openlit.github.io/helm/
 helm repo add qdrant https://qdrant.github.io/qdrant-helm
 helm repo update
 
-# 4. Create a unified namespace
+# 5. Create a unified namespace
 echo "🏗️  Creating 'observability' namespace..."
 kubectl create namespace observability --dry-run=client -o yaml | kubectl apply -f -
 
-# 5. Install Qdrant (Vector Database)
+# 6. Install Qdrant (Vector Database)
 echo "🧠 Installing Qdrant (15m timeout)..."
 helm upgrade --install qdrant qdrant/qdrant \
   --namespace observability \
@@ -41,30 +49,19 @@ helm upgrade --install qdrant qdrant/qdrant \
   --timeout 15m \
   --wait
 
-# 6. Install OpenLIT Stack (ClickHouse, Collector, UI)
-# echo "🔭 Installing OpenLIT AI Observability Stack (15m timeout)..."
-# helm upgrade --install openlit openlit/openlit \
-#  --namespace observability \
-#  --set service.type=ClusterIP \
-#  --timeout 15m \
-#  --wait
-
-# 6.5. Install Jaeger Standalone
-
+# 7. Install Standalone Jaeger
 echo "🔭 Deploying Standalone Jaeger..."
 kubectl apply -f jaeger-deploy.yaml
 
-# 7. Install OpenTelemetry Astronomy Shop (with simulated failures and Tail Sampling)
+# 8. Install OpenTelemetry Astronomy Shop
 echo "🛒 Configuring OTel Astronomy Shop and Jaeger..."
 
-# Safety check to ensure the config file exists in the directory
 if [ ! -f "otel-values.yaml" ]; then
     echo "❌ Error: otel-values.yaml not found in the current directory!"
-    echo "Please ensure the configuration file is present before running this script."
     exit 1
 fi
 
-echo "🛒 Installing OTel Astronomy Shop (15m timeout)..."
+echo "🛒 Installing OTel Astronomy Shop (20m timeout)..."
 helm upgrade --install otel-demo open-telemetry/opentelemetry-demo \
   --namespace observability \
   -f otel-values.yaml \
@@ -73,9 +70,10 @@ helm upgrade --install otel-demo open-telemetry/opentelemetry-demo \
 
 echo "✅ Environment Bootstrap Complete!"
 echo "========================================================="
-echo "To access the UIs, run these port-forward commands in separate terminal tabs:"
+echo "To access the UIs:"
 echo ""
 echo "1. Astronomy Shop Web UI: kubectl port-forward svc/otel-demo-frontendproxy 8080:8080 -n observability"
-echo "2. Jaeger Trace UI:       kubectl port-forward svc/otel-demo-jaeger-query 16686:16686 -n observability"
-echo "3. OpenLIT AI Dashboard:  kubectl port-forward svc/openlit 3000:3000 -n observability"
+echo "2. Jaeger Trace UI:       kubectl port-forward svc/jaeger-standalone 16686:16686 -n default"
+echo "3. Qdrant Vector DB:      kubectl port-forward svc/qdrant 6333:6333 -n observability"
+echo "4. OpenLIT Dashboard:     http://localhost:3000 (Persistent in OrbStack, no port-forward needed)"
 echo "========================================================="

@@ -1,6 +1,6 @@
 # Autonomous SRE Incident Triage Agent: Graph-Orchestrated Telemetry Reasoning & Vector Runbook Verification
 
-A containerized reference implementation and hands-on laboratory demonstrating autonomous Site Reliability Engineering (SRE) incident triage built with **LangGraph**, **Google Gemini**, **OpenTelemetry**, **Jaeger**, **Qdrant**, and the Model **Context Protocol (MCP)**.
+A containerized reference implementation and hands-on laboratory demonstrating autonomous Site Reliability Engineering (SRE) incident triage built with **LangGraph**, **Google Gemini**, **OpenTelemetry**, **Jaeger**, **Qdrant**, and the **Model Context Protocol (MCP)**.
 
 This project demonstrates how autonomous agents can ingest telemetry from microservice architectures, prune diagnostic paths using deterministic vector runbooks, correlate distributed traces across cascading boundaries, and isolate root causes to dramatically reduce **Mean Time to Resolution (MTTR)**.
 
@@ -18,6 +18,8 @@ Feel free to spin this up locally, break things with the simulated chaos toggles
 * **No Hallucinated SOPs:** Rather than letting an LLM guess remediation steps, the agent retrieves real Markdown runbooks from a local Qdrant vector database to guide its troubleshooting path.
 * **Real Trace Telemetry:** Queries local Jaeger instances using OTel semantic conventions to catch cascading failures, timeouts, and socket drops.
 * **Zero Cloud Lock-in:** Built entirely on open-source standards (OTel, OTLP, Jaeger, Qdrant, Kind) so you can run, break, and inspect everything on your laptop.
+
+---
 
 ## Executive Summary & Value Proposition
 
@@ -38,28 +40,25 @@ The architecture decouples operational knowledge (vector database), service tele
 
 ```mermaid
 flowchart TD
-    subgraph Control_Plane ["Incident and Knowledge Ingestion"]
-        A["Incident Alert / Ticket<br>INC-1045"] -->|Text Query| B("Qdrant Vector DB<br>Collections: tickets and runbooks")
+    subgraph Persistent_Control_Plane [Persistent OrbStack Engine]
+        OL[OpenLIT Server<br>Port 3000 UI / 4318 OTLP]
+        CH[(ClickHouse DB)]
+        OL --- CH
     end
 
-    subgraph Agent_Orchestrator ["LangGraph Autonomous Core"]
-        B -->|Context and SOPs| C["Dispatcher Agent Node<br>Gemini 2.5 Flash"]
-        C -->|Triage Summary and Flagged Services| D["Troubleshooter Agent Node<br>Gemini 2.5 Flash"]
+    subgraph Agent_Runtime [LangGraph SRE Agent]
+        TL[Traceloop SDK<br>OpenLLMetry] -->|Agent Traces / Port 4318| OL
+        AG[Dispatcher & Troubleshooter<br>Gemini 2.5 Flash] --- TL
     end
 
-    subgraph Telemetry_Fabric ["Telemetry and Tool Layer"]
-        D -->|MCP or Direct Query| E["Jaeger Distributed Tracing<br>Lookback Window: 120s"]
-        D -.->|Optional Extensibility| F["FastMCP Jaeger Bridge<br>mcp_server.py"]
-        E -->|Span Metrics and Error Codes| D
+    subgraph Ephemeral_Cluster [Kind Cluster: sre-demo]
+        QD[(Qdrant Vector DB<br>Runbooks & Tickets)]
+        APP[OTel Astronomy Shop<br>Microservices] -->|Tail Sampling| COL[OTel Collector]
+        COL --> JG[Standalone Jaeger<br>Workload Traces]
     end
 
-    subgraph Infrastructure ["Kubernetes Runtime and Microservices"]
-        G["OTel Astronomy Shop<br>15+ Polyglot Microservices"] -->|Tail Sampling and OTLP| H["OpenTelemetry Collector"]
-        H -->|OTLP gRPC 4317| I["Standalone Jaeger Instance"]
-        J["Flagd Feature Flags"] -->|Fault Injection| G
-    end
-
-    D -->|Rich Terminal UI and Telemetry Logs| K["Root Cause Analysis Report<br>RCA with Mitigation Items"]
+    AG -->|Vector Search| QD
+    AG -->|Trace Query| JG
 ```
 
 ---
@@ -81,15 +80,16 @@ flowchart TD
 
 ```text
 .
-├── bootstrap.sh            # Automated local cluster and demo deployment script
-├── cleanup.sh              # Teardown script for cluster and port-forwards
-├── jaeger-deploy.yaml      # Standalone Jaeger All-In-One manifest (UI: 16686, OTLP: 4317)
-├── mcp_server.py           # FastMCP server exposing Jaeger trace analysis to AI agents
-├── otel-values.yaml        # Helm values for OTel Demo, Tail Sampling, and Flagd toggles
-├── requirements.txt        # Python dependencies for the agent framework
-├── seed_qdrant.py          # Vector DB bootstrap: baseline tickets (INC-1042..1044) & runbooks
-├── seed_incident_1045.py   # Ingestion script for INC-1045 and Product Catalog runbook RB-004
-└── sre_agents.py           # LangGraph state machine, agent nodes, and Rich terminal UI
+├── bootstrap.sh                # Automated local cluster and demo deployment script
+├── cleanup.sh                  # Teardown script for cluster and port-forwards
+├── docker-compose.openlit.yaml # Persistent ClickHouse & OpenLIT stack
+├── jaeger-deploy.yaml          # Standalone Jaeger All-In-One manifest (UI: 16686, OTLP: 4317)
+├── mcp_server.py               # FastMCP server exposing Jaeger trace analysis to AI agents
+├── otel-values.yaml            # Helm values for OTel Demo, Tail Sampling, and Flagd toggles
+├── requirements.txt            # Python dependencies for the agent framework
+├── seed_qdrant.py              # Vector DB bootstrap: baseline tickets (INC-1042..1044) & runbooks
+├── seed_incident_1045.py       # Ingestion script for INC-1045 and Product Catalog runbook RB-004
+└── sre_agents.py               # LangGraph state machine, agent nodes, and Rich terminal UI
 ```
 
 ---
@@ -98,24 +98,36 @@ flowchart TD
 
 ### 1. Environment Requirements
 
-* macOS or Linux with **Docker** or **OrbStack**
+* macOS or Linux with **Docker Desktop**, **Docker Engine**, or **OrbStack** (with Docker Compose v2)
 * `kind` (Kubernetes in Docker), `kubectl`, and `helm` installed
 * Python 3.10+
 * Google Gemini API Key
 
-### 2. Infrastructure Bootstrap
+### 2. Start Persistent AI Observability (Docker / OrbStack)
+
+To avoid rebuilding ClickHouse and re-indexing historical agent performance whenever the local Kubernetes cluster is recycled, OpenLIT runs out-of-band directly in your host container runtime:
+
+```bash
+# Start ClickHouse and OpenLIT
+docker compose -f docker-compose.openlit.yaml up -d
+
+# Verify services are healthy
+docker ps
+```
+
+### 3. Infrastructure Bootstrap
 
 Clone the repository and run the automated bootstrap script to spin up the `sre-demo` cluster, deploy Qdrant, standalone Jaeger, and the OTel Astronomy Shop:
 
 ```bash
-git clone [https://github.com/](https://github.com/)hbill75/autonomous-sre-agent.git
-cd autonomous-sre-agent
+git clone https://github.com/hbill75/observe-sre-triage-agent.git
+cd observe-sre-triage-agent
 
 chmod +x bootstrap.sh cleanup.sh
 ./bootstrap.sh
 ```
 
-### 3. Establish Port Forwards
+### 4. Establish Port Forwards
 
 Run these port-forwarding commands in separate terminal sessions:
 
@@ -130,7 +142,7 @@ kubectl port-forward svc/jaeger-standalone 16686:16686 -n default
 kubectl port-forward svc/qdrant 6333:6333 -n observability
 ```
 
-### 4. Python Environment & Dependency Installation
+### 5. Python Environment & Dependency Installation
 
 Create a dedicated virtual environment and install the required packages:
 
@@ -146,7 +158,7 @@ Create a `.env` file in the project root:
 echo "GEMINI_API_KEY=AIzaSyYourActualKeyHere" > .env
 ```
 
-### 5. Initialize the Vector Memory
+### 6. Initialize the Vector Memory
 
 Seed historical tickets and standard operating runbooks into Qdrant:
 
@@ -224,6 +236,17 @@ The repository includes `mcp_server.py`, demonstrating how to decouple distribut
   ```
 * Any MCP-compliant client can discover `analyze_service_traces` dynamically over JSON-RPC, isolating the agent process from direct API SDK dependencies and credentials.
 
+### 3. Agent Observability: "Observing the Observer"
+
+A critical requirement when deploying autonomous agents into production is tracking agent execution costs, prompt efficacy, and latency bottlenecks. This project implements dual-tier observability:
+
+* **Tier 1 (Workload Telemetry):** Jaeger collects distributed traces from the microservice applications (`productcatalog`, `frontend`, `checkout`) via the OpenTelemetry Collector.
+* **Tier 2 (Agent Telemetry):** `sre_agents.py` initializes Traceloop (`OpenLLMetry`), emitting OpenTelemetry spans directly to OpenLIT (`http://localhost:4318`) on every graph execution.
+* **Correlated Session Context:** Every agent execution passes the incident identifier (`session_id="INC-1045"`), enabling SRE teams to inspect:
+  * Gemini prompt and completion token counts per triage run.
+  * Retrieval latency for Qdrant runbook lookups.
+  * Downstream tool execution duration across Jaeger queries.
+  
 ---
 
 ## Teardown

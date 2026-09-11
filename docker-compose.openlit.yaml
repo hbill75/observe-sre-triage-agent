@@ -1,0 +1,38 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: openlit-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - openlit_clickhouse_data:/var/lib/clickhouse
+    environment:
+      - CLICKHOUSE_DB=openlit
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  openlit:
+    image: ghcr.io/openlit/openlit:latest
+    container_name: openlit-server
+    ports:
+      - "3000:3000"  # Web UI
+      - "4318:4318"  # OTLP HTTP Receiver (Traceloop target)
+    environment:
+      - TELEMETRY_ENABLED=true
+      - CLICKHOUSE_URL=openlit-clickhouse:8123
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+      - CLICKHOUSE_DB=openlit
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    volumes:
+      - openlit_app_data:/openlit
+
+volumes:
+  openlit_clickhouse_data:
+  openlit_app_data:
