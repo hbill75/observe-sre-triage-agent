@@ -1,10 +1,23 @@
 # Autonomous SRE Incident Triage Agent: Graph-Orchestrated Telemetry Reasoning & Vector Runbook Verification
 
-An enterprise-grade autonomous Site Reliability Engineering (SRE) incident response system built with **LangGraph**, **Google Gemini**, **OpenTelemetry**, **Jaeger**, **Qdrant**, and the **Model Context Protocol (MCP)**.
+A containerized reference implementation and hands-on laboratory demonstrating autonomous Site Reliability Engineering (SRE) incident triage built with **LangGraph**, **Google Gemini**, **OpenTelemetry**, **Jaeger**, **Qdrant**, and the Model **Context Protocol (MCP)**.
 
 This project demonstrates how autonomous agents can ingest telemetry from microservice architectures, prune diagnostic paths using deterministic vector runbooks, correlate distributed traces across cascading boundaries, and isolate root causes to dramatically reduce **Mean Time to Resolution (MTTR)**.
 
 ---
+
+## Why Build This Lab?
+
+We have all stared down alert storms during an outage—tracing cascading errors across microservices while jumping between dashboards, logs, and stale wiki pages. 
+
+This repository is a self-contained, hands-on testbed designed to experiment with a better workflow: **What happens when you give an agentic AI direct access to OpenTelemetry distributed traces and deterministic operational runbooks?**
+
+Feel free to spin this up locally, break things with the simulated chaos toggles, and kick the tires on the implementation:
+
+* **Real Distributed Architecture:** Runs the polyglot OpenTelemetry Astronomy Shop (15+ microservices) locally in a lightweight Kind cluster.
+* **No Hallucinated SOPs:** Rather than letting an LLM guess remediation steps, the agent retrieves real Markdown runbooks from a local Qdrant vector database to guide its troubleshooting path.
+* **Real Trace Telemetry:** Queries local Jaeger instances using OTel semantic conventions to catch cascading failures, timeouts, and socket drops.
+* **Zero Cloud Lock-in:** Built entirely on open-source standards (OTel, OTLP, Jaeger, Qdrant, Kind) so you can run, break, and inspect everything on your laptop.
 
 ## Executive Summary & Value Proposition
 
