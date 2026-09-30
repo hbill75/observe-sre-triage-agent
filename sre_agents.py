@@ -11,9 +11,22 @@ from dotenv import load_dotenv
 
 # 1. Target ONLY the cosmetic Google SDK logger (preserves all real Python warnings)
 logging.getLogger("google.genai").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message="Direct use of automatic function calling")
 
 from qdrant_client import QdrantClient
 from fastembed import TextEmbedding
+
+# =====================================================================
+# 3. Diagnostic Functions (Qdrant Knowledgebase & Jaeger Traces)
+# =====================================================================
+_EMBEDDING_MODEL = None
+
+def get_embedding_model():
+    """Shared singleton to avoid multiple onnxruntime instances in memory."""
+    global _EMBEDDING_MODEL
+    if _EMBEDDING_MODEL is None:
+        _EMBEDDING_MODEL = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    return _EMBEDDING_MODEL
 
 # 3. LangChain & LangGraph Imports
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -26,8 +39,8 @@ from rich.panel import Panel
 from rich.markdown import Markdown
 from rich.theme import Theme
 
-# 5. Traceloop Auto-Instrumentation
-from traceloop.sdk import Traceloop
+# 5. OpenLIT Auto-Instrumentation
+import openlit
 
 load_dotenv()
 
@@ -35,9 +48,10 @@ if not os.getenv("GEMINI_API_KEY"):
     print("❌ Error: GEMINI_API_KEY is not set.")
     sys.exit(1)
 
-Traceloop.init(
-    app_name="Autonomous-SRE-Team",
-    api_endpoint="http://127.0.0.1:4318",
+openlit.init(
+    otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"),
+    application_name="Autonomous-SRE-Team",
+    environment=os.getenv("OPENLIT_ENVIRONMENT", "development"),
     disable_batch=True
 )
 
@@ -68,17 +82,26 @@ def get_text_content(content: Any) -> str:
 # =====================================================================
 # 3. Diagnostic Functions (Qdrant Knowledgebase & Jaeger Traces)
 # =====================================================================
-def query_qdrant(query: str, collection: str = "runbooks") -> str:
+_EMBEDDING_MODEL = None
+
+def get_embedding_model():
+    """Shared singleton to avoid multiple onnxruntime instances in memory."""
+    global _EMBEDDING_MODEL
+    if _EMBEDDING_MODEL is None:
+        _EMBEDDING_MODEL = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    return _EMBEDDING_MODEL
+
+def query_qdrant(query: str, collection: str = "runbooks", limit: int = 1) -> str:
     """Searches Qdrant for incident runbooks or historical tickets."""
     try:
-        client = QdrantClient(url="http://localhost:6333", check_compatibility=False)
-        embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        client = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"), check_compatibility=False)
+        embedding_model = get_embedding_model()
         query_vector = list(embedding_model.embed([query]))[0].tolist()
 
         response = client.query_points(
             collection_name=collection,
             query=query_vector,
-            limit=3
+            limit=limit
         )
         points = response.points
         if not points:
@@ -94,7 +117,7 @@ def query_qdrant(query: str, collection: str = "runbooks") -> str:
 def query_jaeger(service: str, limit: int = 5, lookback_seconds: int = 120) -> str:
     """Queries Jaeger strictly for traces captured within the lookback window."""
     try:
-        # Calculate lookback in microseconds for Jaeger API
+        jaeger_base = os.getenv("JAEGER_URL", "http://localhost:16686")
         end_time_us = int(time.time() * 1_000_000)
         start_time_us = end_time_us - (lookback_seconds * 1_000_000)
 
@@ -104,7 +127,7 @@ def query_jaeger(service: str, limit: int = 5, lookback_seconds: int = 120) -> s
             "start": start_time_us,
             "end": end_time_us
         })
-        url = f"http://localhost:16686/api/traces?{params}"
+        url = f"{jaeger_base}/api/traces?{params}"
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -150,16 +173,16 @@ class SREState(TypedDict):
     final_rca_report: str
 
 def dispatcher_node(state: SREState) -> dict:
-    """Triage alert context and retrieve runbook guidelines from Qdrant[cite: 3]."""
+    """Triage alert context and retrieve runbook guidelines from Qdrant."""
     incident_id = state["incident_id"]
     print(f"📋 [Dispatcher Node] Triaging incident {incident_id}...")
 
-    ticket_context = query_qdrant(query=f"Incident {incident_id}", collection="tickets")
-    runbook_context = query_qdrant(query=f"Troubleshooting guidelines for {incident_id}", collection="runbooks")
+    ticket_context = query_qdrant(query=f"Incident {incident_id} checkout payment failure", collection="tickets", limit=1)
+    runbook_context = query_qdrant(query=f"Troubleshooting payment service authorization and charge failures for {incident_id}", collection="runbooks", limit=1)
 
     prompt = [
         SystemMessage(content=(
-            "You are an elite SRE dispatcher specializing in incident categorization and runbook alignment[cite: 3]. "
+            "You are an elite SRE dispatcher specializing in incident categorization and runbook alignment. "
             "Analyze the ticket context and runbook guidelines to identify impacted microservices and triage the issue."
         )),
         HumanMessage(content=(
@@ -167,7 +190,7 @@ def dispatcher_node(state: SREState) -> dict:
             f"Ticket Context from Qdrant:\n{ticket_context}\n\n"
             f"Runbook Context from Qdrant:\n{runbook_context}\n\n"
             "Instructions:\n"
-            "1. List all affected service names (e.g., 'frontend', 'recommendation', 'productcatalogservice', 'checkoutservice')[cite: 3, 4].\n"
+            "1. List all affected service names (e.g., 'frontend', 'recommendation', 'productcatalogservice', 'checkoutservice', 'paymentservice').\n"
             "2. Summarize observed symptoms.\n"
             "3. State the recommended runbook troubleshooting steps."
         ))
@@ -266,11 +289,11 @@ def run_sre_workflow(incident_id: str) -> str:
         expand=False
     ))
     
-    Traceloop.set_association_properties({
-        "session_id": incident_id,
-        "incident_id": incident_id,
-        "user_id": "sre-operator"
-    })
+#    Traceloop.set_association_properties({
+#        "session_id": incident_id,
+#        "incident_id": incident_id,
+#        "user_id": "sre-operator"
+#    })
 
     initial_state: SREState = {
         "incident_id": incident_id,
@@ -305,7 +328,7 @@ def run_sre_workflow(incident_id: str) -> str:
     return final_report
 
 if __name__ == "__main__":
-    incident_to_investigate = "INC-1045"
+    incident_to_investigate = "INC-1046"
     report = run_sre_workflow(incident_to_investigate)
 
     console.print("\n")
@@ -315,3 +338,7 @@ if __name__ == "__main__":
         border_style="green",
         padding=(1, 2)
     ))
+
+    # Clean exit to prevent onnxruntime static destructor abort on macOS
+    sys.stdout.flush()
+    os._exit(0)

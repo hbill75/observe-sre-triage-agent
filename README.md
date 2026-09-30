@@ -133,7 +133,7 @@ Run these port-forwarding commands in separate terminal sessions:
 
 ```bash
 # Terminal 1: Astronomy Shop Storefront & Feature Flag UI (Port 8080)
-kubectl port-forward svc/otel-demo-frontendproxy 8080:8080 -n observability
+kubectl port-forward svc/frontend-proxy 8080:8080 -n observability
 
 # Terminal 2: Jaeger Tracing Query UI & API (Port 16686)
 kubectl port-forward svc/jaeger-standalone 16686:16686 -n default

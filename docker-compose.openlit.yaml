@@ -20,18 +20,24 @@ services:
     container_name: openlit-server
     ports:
       - "3000:3000"  # Web UI
-      - "4318:4318"  # OTLP HTTP Receiver (Traceloop target)
+      - "4318:4318"  # OTLP HTTP Receiver
     environment:
       - TELEMETRY_ENABLED=true
-      - CLICKHOUSE_URL=openlit-clickhouse:8123
+      - CLICKHOUSE_URL=http://openlit-clickhouse:8123
+      - CLICKHOUSE_HOST=openlit-clickhouse
+      - CLICKHOUSE_PORT=8123
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=
       - CLICKHOUSE_DB=openlit
+      - NEXTAUTH_SECRET=observe-sre-secret-key-32-chars-long!
+      - NEXTAUTH_URL=http://localhost:3000
+      - SQLITE_DATABASE_URL=file:/app/client/data/openlit.db
     depends_on:
       clickhouse:
         condition: service_healthy
     volumes:
-      - openlit_app_data:/openlit
+      - openlit_app_data:/app/client/data
+      - ./otel/otel-collector-config.yaml:/etc/otel/otel-collector-config.yaml
 
 volumes:
   openlit_clickhouse_data:

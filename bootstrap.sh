@@ -15,9 +15,45 @@ done
 
 # 2. Verify persistent OpenLIT stack is running in OrbStack / Docker
 echo "🔍 Checking OpenLIT stack in OrbStack..."
-if ! docker ps | grep -q "openlit-server"; then
-  echo "⚠️  OpenLIT is not running in Docker. Starting it now via docker compose..."
+
+if [ ! -f "otel/otel-collector-config.yaml" ]; then
+  echo "❌ Error: otel/otel-collector-config.yaml missing. Please check it into the repository."
+  exit 1
+fi
+
+OPENLIT_CONTAINER="openlit" # or "openlit-server" depending on your docker-compose container_name
+
+if ! docker ps --format '{{.Names}}' | grep -q "^${OPENLIT_CONTAINER}$"; then
+  echo "⚠️  OpenLIT is not running. Launching via Docker Compose..."
   docker compose -f docker-compose.openlit.yaml up -d
+
+  echo "⏳ Validating OpenLIT collector configuration inside container..."
+  docker compose -f docker-compose.openlit.yaml exec -T ${OPENLIT_CONTAINER} \
+    /app/opamp/otelcontribcol validate --config /etc/otel/otel-collector-config.yaml
+
+  echo "⏳ Waiting for OpenLIT OTLP receiver (port 4318) to accept trace batches..."
+  MAX_RETRIES=20
+  RETRY_COUNT=0
+  READY=false
+  while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    RESPONSE=$(curl -s -X POST http://127.0.0.1:4318/v1/traces \
+      -H "Content-Type: application/json" \
+      -d '{"resourceSpans":[]}' 2>/dev/null || true)
+    
+    if echo "$RESPONSE" | grep -q "partialSuccess"; then
+      READY=true
+      break
+    fi
+    RETRY_COUNT=$((RETRY_COUNT+1))
+    sleep 2
+  done
+
+  if [ "$READY" = false ]; then
+    echo "❌ Error: OpenLIT failed to accept spans within timeout."
+    docker logs ${OPENLIT_CONTAINER} --tail 25
+    exit 1
+  fi
+  echo "✔ OpenLIT OTLP receiver is ready."
 else
   echo "✅ Persistent OpenLIT stack detected."
 fi
