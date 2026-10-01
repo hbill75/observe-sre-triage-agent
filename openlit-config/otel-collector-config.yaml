@@ -13,10 +13,10 @@ processors:
 
 exporters:
   clickhouse:
-    endpoint: tcp://openlit-clickhouse:9000
+    endpoint: tcp://clickhouse:9000
     database: openlit
     username: default
-    password: ""
+    password: OPENLIT
     ttl: 72h
     timeout: 5s
 
@@ -27,6 +27,10 @@ service:
       processors: [batch]
       exporters: [clickhouse]
     metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [clickhouse]
+    logs:
       receivers: [otlp]
       processors: [batch]
       exporters: [clickhouse]

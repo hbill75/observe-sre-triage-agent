@@ -1,49 +1,68 @@
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:24.4.1
-    container_name: openlit-clickhouse
-    ports:
-      - "8123:8123"
-      - "9000:9000"
-    volumes:
-      - openlit_clickhouse_data:/var/lib/clickhouse
+    image: clickhouse/clickhouse-server@sha256:2e6587b81a267c6152cf2112c3532516424d3eaa36f1b150d5b8847c0e3d5b01
+    container_name: clickhouse
     environment:
-      - CLICKHOUSE_DB=openlit
-      - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=OPENLIT
+      CLICKHOUSE_PASSWORD: ${OPENLIT_DB_PASSWORD:-OPENLIT}
+      CLICKHOUSE_USER: ${OPENLIT_DB_USER:-default}
+      CLICKHOUSE_DATABASE: ${OPENLIT_DB_NAME:-openlit}
+      CLICKHOUSE_ALWAYS_RUN_INITDB_SCRIPTS: true
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./openlit-config/clickhouse-config.xml:/etc/clickhouse-server/config.d/custom-config.xml:ro
+      - ./openlit-config/clickhouse-init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    ports:
+      - "9000:9000"
+      - "8123:8123"
     healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q localhost:8123/ping || exit 1"]
-      interval: 3s
+      test: ["CMD-SHELL", "clickhouse-client --user=$${CLICKHOUSE_USER} --password=$${CLICKHOUSE_PASSWORD} --query='SELECT 1' || exit 1"]
+      interval: 5s
       timeout: 3s
       retries: 10
-    restart: unless-stopped
+      start_period: 100s
+    restart: always
 
   openlit:
-    image: ghcr.io/openlit/openlit:latest
-    container_name: openlit-server
-    ports:
-      - "3000:3000"
-      - "4317:4317"
-      - "4318:4318"
+    image: ghcr.io/openlit/openlit@sha256:94552ccd09379b5e2fec3c51c4fec1b41d88d6b56b0a5ccc895c116673884fa8
+    container_name: openlit
     environment:
-      - TELEMETRY_ENABLED=true
-      - CLICKHOUSE_URL=http://clickhouse:8123
-      - CLICKHOUSE_HOST=clickhouse
-      - CLICKHOUSE_PORT=8123
-      - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=OPENLIT
-      - CLICKHOUSE_DB=openlit
-      - NEXTAUTH_SECRET=observe-sre-secret-key-32-chars-long!
-      - NEXTAUTH_URL=http://localhost:3000
-      - SQLITE_DATABASE_URL=file:/app/client/data/openlit.db
+      TELEMETRY_ENABLED: "true"
+      INIT_DB_HOST: clickhouse
+      INIT_DB_PORT: 8123
+      INIT_DB_DATABASE: ${OPENLIT_DB_NAME:-openlit}
+      INIT_DB_USERNAME: ${OPENLIT_DB_USER:-default}
+      INIT_DB_PASSWORD: ${OPENLIT_DB_PASSWORD:-OPENLIT}
+      SQLITE_DATABASE_URL: file:/app/client/data/data.db
+      PORT: ${PORT:-3000}
+      DOCKER_PORT: ${PORT:-3000}
+      
+      # OAuth Environment Variables
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "${PORT:-3000}:${DOCKER_PORT:-3000}"
+      - "4317:4317"  # OTLP gRPC receiver
+      - "4318:4318"  # OTLP HTTP receiver
     depends_on:
       clickhouse:
         condition: service_healthy
     volumes:
-      - openlit_app_data:/app/client/data
-      - ./otel/otel-collector-config.yaml:/etc/otel/otel-collector-config.yaml
-    restart: unless-stopped
+      - openlit-data:/app/client/data
+      - ./openlit-config/otel-collector-config.yaml:/etc/otel/otel-collector-config.yaml
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000').then(r=>{process.exit(r.ok?0:1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    restart: always
 
 volumes:
-  openlit_clickhouse_data:
-  openlit_app_data:
+  clickhouse-data:
+  openlit-data:

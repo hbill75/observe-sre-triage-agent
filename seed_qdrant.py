@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# seed_qdrant.py - Populates Qdrant with payment incident tickets and SRE runbooks
+# seed_qdrant.py - Seeds Qdrant with HotROD tickets and SRE runbooks
 
 import uuid
 from qdrant_client import QdrantClient, models
@@ -26,15 +26,15 @@ def seed_database():
     )
 
     tickets = [
-        "INC-1042: Urgent - Customers are reporting that the Astronomy Shop frontend is hanging, and some are seeing HTTP 500 errors when clicking on specific items. The recommendation module seems to be timing out.",
-        "INC-1044: Info - Routine database backup completed successfully.",
-        "INC-1046: Critical - Users are unable to place orders during checkout. When submitting payment details, the checkout flow terminates with an HTTP 500 error. Downstream calls from checkoutservice to paymentservice are failing on the Charge method with gRPC errors."
+        "INC-1090: Info - Daily PostgreSQL automated database snapshot completed without error.",
+        "INC-2001: Critical - Ride requests are failing for specific customers with HTTP 500 errors. Frontend dispatch calls to customer and route services are failing or timing out.",
+        "INC-2002: Alert - Elevated latency observed across driver service dispatch pool during peak shift rotation."
     ]
     
     ticket_metadata = [
-        {"ticket_id": "INC-1042", "priority": "High", "status": "Open", "service": "frontend, recommendation"},
-        {"ticket_id": "INC-1044", "priority": "Low", "status": "Closed", "service": "database"},
-        {"ticket_id": "INC-1046", "priority": "Critical", "status": "Open", "service": "paymentservice, checkoutservice, frontend"}
+        {"ticket_id": "INC-1090", "priority": "Low", "status": "Closed", "service": "database"},
+        {"ticket_id": "INC-2001", "priority": "Critical", "status": "Open", "service": "frontend, customer, route"},
+        {"ticket_id": "INC-2002", "priority": "Medium", "status": "Open", "service": "driver"}
     ]
 
     ticket_embeddings = list(embedding_model.embed(tickets))
@@ -64,15 +64,15 @@ def seed_database():
     )
 
     runbooks = [
-        "Runbook: Troubleshooting Recommendation Service Cache (RB-001). If the recommendation service experiences high latency or throws HTTP 500s, the root cause is often a failure to reach the Valkey cache. Check the Jaeger trace to see if the span for the recommendation service contains downstream failures.",
-        "Runbook: General Trace Analysis (RB-003). When troubleshooting microservices, always start by retrieving the traces for the impacted service from Jaeger. Look at the duration of the spans to find the bottleneck, and check the status.code to identify where the failure originated.",
-        "Runbook: Troubleshooting Payment Service Failures (RB-005). When checkoutservice fails to complete transactions or paymentservice throws errors: 1. Query Jaeger traces for service 'checkoutservice' and operation 'hipstershop.PaymentService/Charge' or 'paymentservice'. 2. Inspect spans for 'error=true' and check gRPC status codes (e.g., Code 13 INTERNAL or Code 3 INVALID_ARGUMENT). 3. Verify whether payment authorization feature flags (such as paymentFailure in flagd) are enabled. 4. Inspect paymentservice container logs for mock credit card validation errors or connection drops. 5. If failure is flag-induced, toggle paymentFailure to off; if container-level, restart the paymentservice deployment."
+        "Runbook: Driver Pool Mutex & Contention (RB-009). When driver service latency spikes under heavy concurrent requests, check Jaeger traces for the 'driver' service. Look for lock contention or worker queue exhaustion on FindNearest operations.",
+        "Runbook: Troubleshooting HotROD Customer Dispatch Failures (RB-010). When frontend /dispatch requests return HTTP 500 or throw exceptions: 1. Query Jaeger traces for the 'frontend' and 'customer' services. 2. Look for spans with 'error=true' or HTTP 500 status codes. 3. Check customer ID resolution in the customer service. If the customer ID is invalid or cannot be found in the database, customer lookup terminates immediately. 4. Verify downstream route calculation RPCs between frontend and route services. 5. If failure is an invalid customer ID, validate input upstream; if network-related, verify Kubernetes pod communication.",
+        "Runbook: General Trace Analysis (RB-003). When troubleshooting microservices, always start by retrieving the traces for the impacted service from Jaeger. Look at the duration of the spans to find the bottleneck, and check the status.code to identify where the failure originated."
     ]
 
     runbook_metadata = [
-        {"runbook_id": "RB-001", "topic": "Recommendation Cache Failures"},
-        {"runbook_id": "RB-003", "topic": "General Trace Analysis"},
-        {"runbook_id": "RB-005", "topic": "Payment Service Authorization and Charge Failures"}
+        {"runbook_id": "RB-009", "topic": "Driver Mutex Contention"},
+        {"runbook_id": "RB-010", "topic": "HotROD Customer Dispatch Failures"},
+        {"runbook_id": "RB-003", "topic": "General Trace Analysis"}
     ]
 
     runbook_embeddings = list(embedding_model.embed(runbooks))
@@ -88,7 +88,7 @@ def seed_database():
 
     client.upsert(collection_name="runbooks", points=runbook_points)
 
-    print("✅ Successfully seeded Qdrant with tickets and runbooks (including INC-1046 / RB-005)!")
+    print("✅ Successfully seeded Qdrant with HotROD tickets and runbooks (INC-2001 / RB-010)!")
 
 if __name__ == "__main__":
     seed_database()

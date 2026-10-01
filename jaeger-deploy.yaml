@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: jaeger-standalone
+  namespace: default
 spec:
   replicas: 1
   selector:
@@ -20,12 +21,17 @@ spec:
           value: "true"
         ports:
         - containerPort: 16686
+          name: ui
         - containerPort: 4317
+          name: otlp-grpc
+        - containerPort: 4318
+          name: otlp-http
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: jaeger-standalone
+  namespace: default
 spec:
   selector:
     app: jaeger-standalone
@@ -36,3 +42,6 @@ spec:
   - name: otlp-grpc
     port: 4317
     targetPort: 4317
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
