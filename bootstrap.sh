@@ -16,10 +16,10 @@ done
 
 # 2. Verify persistent OpenLIT stack is running in OrbStack / Docker
 echo "🔍 Checking OpenLIT stack in OrbStack..."
-if ! docker ps --format '{{.Names}}' | grep -q "^openlit-server$"; then
-  echo "❌ Error: OpenLIT is not running in OrbStack."
-  echo "   Please run './openlit-bootstrap.sh' first, then re-run bootstrap.sh."
-  exit 1
+if ! docker ps --format '{{.Names}}' | grep -qE "^(openlit|openlit-server)$"; then
+    echo "❌ Error: OpenLIT is not running in OrbStack."
+    echo "   Please start it via docker compose first, then re-run bootstrap.sh."
+    exit 1
 fi
 echo "✅ Persistent OpenLIT stack detected."
 

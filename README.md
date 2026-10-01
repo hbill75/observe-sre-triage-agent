@@ -215,24 +215,17 @@ curl -i -X POST http://localhost:4318/v1/traces \
 Run the automated bootstrap script to spin up the `sre-demo` cluster, deploy Qdrant, Jaeger, and HotROD, and validate cross-service connectivity:
 
 ```bash
-chmod +x bootstrap.sh cleanup.sh simulate_errors.sh
+chmod +x bootstrap.sh cleanup.sh simulate_errors.sh port_forwards.sh
 ./bootstrap.sh
 
 ```
 
 ### 4. Establish Background Port-Forwards
 
-Open three separate terminal tabs to expose the cluster services:
+Open one new terminal tab to expose the cluster services:
 
 ```bash
-# Terminal 1: HotROD Web UI (Port 8080)
-kubectl port-forward svc/hotrod 8080:8080 -n default
-
-# Terminal 2: Jaeger Tracing Query UI & API (Port 16686)
-kubectl port-forward svc/jaeger-standalone 16686:16686 -n default
-
-# Terminal 3: Qdrant Vector Search Engine (Port 6333)
-kubectl port-forward svc/qdrant 6333:6333 -n observability
+./port_forwards.sh
 
 ```
 
@@ -395,4 +388,9 @@ To cleanly delete the Kind cluster and release all port-forwards while preservin
 
 ```
 
-(To completely wipe persistent OpenLIT telemetry and ClickHouse volumes, run `docker compose -f docker-compose.openlit.yaml down -v`).
+To completely wipe persistent OpenLIT telemetry and ClickHouse volumes, run:
+
+```bash
+docker compose -f docker-compose.openlit.yaml down -v
+
+```
