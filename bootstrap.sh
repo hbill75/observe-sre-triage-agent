@@ -15,48 +15,19 @@ done
 
 # 2. Verify persistent OpenLIT stack is running in OrbStack / Docker
 echo "🔍 Checking OpenLIT stack in OrbStack..."
-
-if [ ! -f "otel/otel-collector-config.yaml" ]; then
-  echo "❌ Error: otel/otel-collector-config.yaml missing. Please check it into the repository."
+if ! docker ps --format '{{.Names}}' | grep -q "^openlit-server$"; then
+  echo "❌ Error: OpenLIT is not running in OrbStack."
+  echo "   Please run './openlit-bootstrap.sh' first, then re-run bootstrap.sh."
   exit 1
 fi
 
-OPENLIT_CONTAINER="openlit" # or "openlit-server" depending on your docker-compose container_name
-
-if ! docker ps --format '{{.Names}}' | grep -q "^${OPENLIT_CONTAINER}$"; then
-  echo "⚠️  OpenLIT is not running. Launching via Docker Compose..."
-  docker compose -f docker-compose.openlit.yaml up -d
-
-  echo "⏳ Validating OpenLIT collector configuration inside container..."
-  docker compose -f docker-compose.openlit.yaml exec -T ${OPENLIT_CONTAINER} \
-    /app/opamp/otelcontribcol validate --config /etc/otel/otel-collector-config.yaml
-
-  echo "⏳ Waiting for OpenLIT OTLP receiver (port 4318) to accept trace batches..."
-  MAX_RETRIES=20
-  RETRY_COUNT=0
-  READY=false
-  while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    RESPONSE=$(curl -s -X POST http://127.0.0.1:4318/v1/traces \
-      -H "Content-Type: application/json" \
-      -d '{"resourceSpans":[]}' 2>/dev/null || true)
-    
-    if echo "$RESPONSE" | grep -q "partialSuccess"; then
-      READY=true
-      break
-    fi
-    RETRY_COUNT=$((RETRY_COUNT+1))
-    sleep 2
-  done
-
-  if [ "$READY" = false ]; then
-    echo "❌ Error: OpenLIT failed to accept spans within timeout."
-    docker logs ${OPENLIT_CONTAINER} --tail 25
-    exit 1
-  fi
-  echo "✔ OpenLIT OTLP receiver is ready."
-else
-  echo "✅ Persistent OpenLIT stack detected."
+# Quick connectivity test against port 4318
+if ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4318/v1/traces | grep -qE '200|400|405'; then
+  echo "❌ Error: OpenLIT container is running, but port 4318 is not accepting traffic."
+  echo "   Check logs with: docker logs openlit-server --tail 30"
+  exit 1
 fi
+echo "✅ Persistent OpenLIT stack detected and healthy."
 
 # 3. Create the Kind cluster
 echo "📦 Checking Kubernetes cluster 'sre-demo'..."
@@ -65,6 +36,54 @@ if kind get clusters | grep -q "^sre-demo$"; then
 else
   kind create cluster --name sre-demo
 fi
+
+# ==============================================================================
+# Bridge OpenLIT Container to Kind Network & Register In-Cluster DNS
+# ==============================================================================
+echo "🔗 Bridging OpenLIT container to Kind Docker network..."
+docker network connect kind openlit-server 2>/dev/null || true
+
+OPENLIT_KIND_IP=$(docker inspect -f '{{with index .NetworkSettings.Networks "kind"}}{{.IPAddress}}{{end}}' openlit-server 2>/dev/null || true)
+
+if [ -z "$OPENLIT_KIND_IP" ]; then
+  echo "❌ Error: Could not determine IP address for openlit-server on the 'kind' network."
+  exit 1
+fi
+
+echo "✔ OpenLIT attached to 'kind' network at IP: ${OPENLIT_KIND_IP}"
+
+echo "📡 Registering in-cluster DNS service for OpenLIT..."
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: openlit
+  namespace: default
+spec:
+  ports:
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: openlit
+  namespace: default
+subsets:
+  - addresses:
+      - ip: ${OPENLIT_KIND_IP}
+    ports:
+      - name: otlp-http
+        port: 4318
+      - name: otlp-grpc
+        port: 4317
+EOF
+
+echo "✔ In-cluster endpoint registered: http://openlit.default.svc.cluster.local:4318 -> ${OPENLIT_KIND_IP}:4318"
 
 # 4. Add & Update Helm Repositories
 echo "📥 Configuring Helm repositories..."
@@ -108,7 +127,7 @@ echo "✅ Environment Bootstrap Complete!"
 echo "========================================================="
 echo "To access the UIs:"
 echo ""
-echo "1. Astronomy Shop Web UI: kubectl port-forward svc/otel-demo-frontendproxy 8080:8080 -n observability"
+echo "1. Astronomy Shop Web UI: kubectl port-forward svc/frontend-proxy 8080:8080 -n observability"
 echo "2. Jaeger Trace UI:       kubectl port-forward svc/jaeger-standalone 16686:16686 -n default"
 echo "3. Qdrant Vector DB:      kubectl port-forward svc/qdrant 6333:6333 -n observability"
 echo "4. OpenLIT Dashboard:     http://localhost:3000 (Persistent in OrbStack, no port-forward needed)"

@@ -1,6 +1,6 @@
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:latest
+    image: clickhouse/clickhouse-server:24.4.1
     container_name: openlit-clickhouse
     ports:
       - "8123:8123"
@@ -9,25 +9,29 @@ services:
       - openlit_clickhouse_data:/var/lib/clickhouse
     environment:
       - CLICKHOUSE_DB=openlit
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=OPENLIT
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      test: ["CMD-SHELL", "wget --spider -q localhost:8123/ping || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
 
   openlit:
     image: ghcr.io/openlit/openlit:latest
     container_name: openlit-server
     ports:
-      - "3000:3000"  # Web UI
-      - "4318:4318"  # OTLP HTTP Receiver
+      - "3000:3000"
+      - "4317:4317"
+      - "4318:4318"
     environment:
       - TELEMETRY_ENABLED=true
-      - CLICKHOUSE_URL=http://openlit-clickhouse:8123
-      - CLICKHOUSE_HOST=openlit-clickhouse
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_PORT=8123
       - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=
+      - CLICKHOUSE_PASSWORD=OPENLIT
       - CLICKHOUSE_DB=openlit
       - NEXTAUTH_SECRET=observe-sre-secret-key-32-chars-long!
       - NEXTAUTH_URL=http://localhost:3000
@@ -38,6 +42,7 @@ services:
     volumes:
       - openlit_app_data:/app/client/data
       - ./otel/otel-collector-config.yaml:/etc/otel/otel-collector-config.yaml
+    restart: unless-stopped
 
 volumes:
   openlit_clickhouse_data:
