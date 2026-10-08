@@ -7,17 +7,20 @@ A local reference implementation demonstrating autonomous Site Reliability Engin
 ## Architecture Overview
 
 ```mermaid
-flowchart LR
-    subgraph Host_Environment [Host System Runtime - Laptop]
-        direction TB
-        subgraph Agent_Runtime [AI Agent Core]
+flowchart TD
+    subgraph Host_Environment [Host Environment - Laptop / OrbStack]
+        direction LR
+        subgraph Agent_Core [AI Agent Runtime - Host Python]
             AG["LangGraph SRE Agents<br>Dispatcher and Troubleshooter<br>Google Gemini"]
         end
+
         subgraph Host_Observability [Persistent Observability - Docker]
+            direction LR
             OL["OpenLIT Server<br>Dashboard 3000, OTLP 4318"]
             CH[("ClickHouse DB")]
             OL --- CH
         end
+
         AG -. "Agent Metrics and Spans" .-> OL
     end
 
@@ -29,7 +32,7 @@ flowchart LR
             MCP["Jaeger MCP Server<br>FastMCP SSE Service"]
         end
 
-        subgraph K8s_Services [Microservices and Telemetry]
+        subgraph K8s_Services [Microservices and Tracing]
             direction TB
             HR["HotROD Microservices<br>frontend, customer, driver, route"]
             JG["Standalone Jaeger<br>Trace Storage and Query API"]
