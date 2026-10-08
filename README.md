@@ -7,32 +7,42 @@ A local reference implementation demonstrating autonomous Site Reliability Engin
 ## Architecture Overview
 
 ```mermaid
-flowchart TD
-    subgraph Host_Observability [Persistent Observability - Docker or OrbStack]
-        OL["OpenLIT Server<br>Dashboard 3000, OTLP 4318"]
-        CH[("ClickHouse DB")]
-        OL --- CH
-    end
-
-    subgraph Agent_Runtime [AI Agent Runtime - Host Python]
-        AG["LangGraph SRE Agents<br>Dispatcher and Troubleshooter<br>Google Gemini"]
-        AG -. "Agent Traces and Token Metrics" .-> OL
+flowchart LR
+    subgraph Host_Environment [Host System Runtime - Laptop]
+        direction TB
+        subgraph Agent_Runtime [AI Agent Core]
+            AG["LangGraph SRE Agents<br>Dispatcher and Troubleshooter<br>Google Gemini"]
+        end
+        subgraph Host_Observability [Persistent Observability - Docker]
+            OL["OpenLIT Server<br>Dashboard 3000, OTLP 4318"]
+            CH[("ClickHouse DB")]
+            OL --- CH
+        end
+        AG -. "Agent Metrics and Spans" .-> OL
     end
 
     subgraph K8s_Cluster [Kind Kubernetes Cluster - sre-demo]
-        HR["HotROD Microservices<br>frontend, customer, driver, route"]
-        JG["Standalone Jaeger<br>Trace Storage and Query API"]
-        MCP["Jaeger MCP Server<br>FastMCP SSE Service"]
-        QD[("Qdrant Vector DB<br>INC-2001 and RB-010")]
+        direction LR
+        subgraph K8s_Tools [Knowledge and Tool Tier]
+            direction TB
+            QD[("Qdrant Vector DB<br>INC-2001 and RB-010")]
+            MCP["Jaeger MCP Server<br>FastMCP SSE Service"]
+        end
 
-        HR -->|"1. Emits Failure Spans (OTLP)"| JG
-        MCP -->|"3. Query Traces (jaeger-standalone 16686)"| JG
-        JG -->|"4. Raw Trace Spans"| MCP
+        subgraph K8s_Services [Microservices and Telemetry]
+            direction TB
+            HR["HotROD Microservices<br>frontend, customer, driver, route"]
+            JG["Standalone Jaeger<br>Trace Storage and Query API"]
+            HR -->|"1. Emits Spans (OTLP)"| JG
+        end
+
+        MCP -->|"4. Query Traces (Cluster DNS)"| JG
+        JG -->|"5. Raw Trace Spans"| MCP
     end
 
-    AG -->|"RAG Search (Tickets and Runbooks)"| QD
-    AG -->|"2. MCP Tool Call (query_service_traces)"| MCP
-    MCP -->|"5. Sanitized Error Telemetry"| AG
+    AG -->|"2. RAG Search"| QD
+    AG -->|"3. MCP Tool Call (SSE)"| MCP
+    MCP -->|"6. Sanitized Error Spans"| AG
 ```
 
 ---
