@@ -33,6 +33,7 @@ flowchart TD
     AG -->|"RAG Search (Tickets & Runbooks)"| QD
     AG -->|"2. MCP Tool Call: query_service_traces"| MCP
     MCP -->|"5. Sanitized Error Telemetry"| AG
+```
 
 ---
 
