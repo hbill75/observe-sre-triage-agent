@@ -10,35 +10,22 @@ A local reference implementation demonstrating autonomous Site Reliability Engin
 flowchart TD
     subgraph Host_Environment [Host Environment - Laptop / OrbStack]
         direction LR
-        subgraph Agent_Core [AI Agent Runtime - Host Python]
-            AG["LangGraph SRE Agents<br>Dispatcher and Troubleshooter<br>Google Gemini"]
-        end
-
-        subgraph Host_Observability [Persistent Observability - Docker]
-            direction LR
-            OL["OpenLIT Server<br>Dashboard 3000, OTLP 4318"]
-            CH[("ClickHouse DB")]
-            OL --- CH
-        end
+        AG["LangGraph SRE Agents<br>Dispatcher and Troubleshooter<br>Google Gemini"]
+        OL["OpenLIT Server<br>Dashboard 3000, OTLP 4318"]
+        CH[("ClickHouse DB")]
 
         AG -. "Agent Metrics and Spans" .-> OL
+        OL --- CH
     end
 
     subgraph K8s_Cluster [Kind Kubernetes Cluster - sre-demo]
         direction LR
-        subgraph K8s_Tools [Knowledge and Tool Tier]
-            direction TB
-            QD[("Qdrant Vector DB<br>INC-2001 and RB-010")]
-            MCP["Jaeger MCP Server<br>FastMCP SSE Service"]
-        end
+        QD[("Qdrant Vector DB<br>INC-2001 and RB-010")]
+        MCP["Jaeger MCP Server<br>FastMCP SSE Service"]
+        JG["Standalone Jaeger<br>Trace Storage and Query API"]
+        HR["HotROD Microservices<br>frontend, customer, driver, route"]
 
-        subgraph K8s_Services [Microservices and Tracing]
-            direction TB
-            HR["HotROD Microservices<br>frontend, customer, driver, route"]
-            JG["Standalone Jaeger<br>Trace Storage and Query API"]
-            HR -->|"1. Emits Spans (OTLP)"| JG
-        end
-
+        HR -->|"1. Emits Spans (OTLP)"| JG
         MCP -->|"4. Query Traces (Cluster DNS)"| JG
         JG -->|"5. Raw Trace Spans"| MCP
     end
