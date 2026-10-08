@@ -8,30 +8,31 @@ A local reference implementation demonstrating autonomous Site Reliability Engin
 
 ```mermaid
 flowchart TD
-    subgraph Host_Observability ["Persistent Observability (Docker / OrbStack)"]
-        OL["OpenLIT Server<br>(Dashboard: 3000 | OTLP: 4318)"]
+    subgraph Host_Observability["Persistent Observability (Docker / OrbStack)"]
+        OL["OpenLIT Server<br>(Dashboard: 3000, OTLP: 4318)"]
         CH[("ClickHouse DB")]
         OL --- CH
     end
 
-    subgraph Agent_Runtime ["AI Agent Runtime (Host / Python)"]
+    subgraph Agent_Runtime["AI Agent Runtime (Host / Python)"]
         AG["LangGraph SRE Agents<br>(Dispatcher & Troubleshooter)<br>Google Gemini"]
         AG -.->|"Agent Traces & Token Metrics"| OL
     end
 
-    subgraph K8s_Cluster ["Kind Kubernetes Cluster (sre-demo)"]
+    subgraph K8s_Cluster["Kind Kubernetes Cluster (sre-demo)"]
         HR["HotROD Microservices<br>(frontend, customer, driver, route)"]
         JG["Standalone Jaeger<br>(Trace Storage & Query API)"]
         MCP["Jaeger MCP Server<br>(FastMCP SSE Service)"]
         QD[("Qdrant Vector DB<br>(INC-2001 & RB-010)")]
 
         HR -->|"1. Emits Failure Spans (OTLP)"| JG
-        MCP <-->|"3. Queries & Filters Spans<br>(Cluster DNS jaeger-standalone:16686)"| JG
+        MCP -->|"3. Query Traces (jaeger-standalone:16686)"| JG
+        JG -->|"4. Raw Trace Spans"| MCP
     end
 
     AG -->|"RAG Search (Tickets & Runbooks)"| QD
-    AG -->|"2. MCP Tool Call (SSE): query_service_traces"| MCP
-    MCP -->|"4. Returns Sanitized Error Telemetry"| AG
+    AG -->|"2. MCP Tool Call: query_service_traces"| MCP
+    MCP -->|"5. Sanitized Error Telemetry"| AG
 
 ---
 
