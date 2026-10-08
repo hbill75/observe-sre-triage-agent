@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install MCP server and HTTP client dependencies
+RUN pip install --no-cache-dir \
+    "fastmcp>=0.4.0" \
+    "mcp>=1.2.0" \
+    "httpx>=0.27.0"
+
+# Copy the server implementation
+COPY mcp_server.py .
+
+# FastMCP listens on port 8000 for SSE traffic
+EXPOSE 8000
+
+CMD ["python", "mcp_server.py"]

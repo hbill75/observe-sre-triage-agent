@@ -3,6 +3,9 @@ import sys
 import time
 import json
 import logging
+import asyncio
+from mcp import ClientSession
+from mcp.client.sse import sse_client
 import urllib.parse
 import urllib.request
 from typing import TypedDict, List, Any
@@ -33,7 +36,7 @@ if not os.getenv("GEMINI_API_KEY"):
 # Service Endpoints
 OTLP_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-JAEGER_URL = os.getenv("JAEGER_URL", "http://localhost:16686")
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8000/sse")
 APP_ENVIRONMENT = os.getenv("OPENLIT_ENVIRONMENT", "development")
 
 openlit.init(
@@ -83,54 +86,25 @@ def query_qdrant(query: str, collection: str = "runbooks", limit: int = 1) -> st
         return f"Error querying Qdrant: {str(e)}"
 
 # 1. Update query_jaeger lookback default to 3600 seconds (1 hour)
-def query_jaeger(service: str, limit: int = 5, lookback_seconds: int = 3600) -> str:
-    try:
-        end_time_us = int(time.time() * 1_000_000)
-        start_time_us = end_time_us - (lookback_seconds * 1_000_000)
+async def _call_mcp_query_traces(service: str, limit: int = 5, lookback_seconds: int = 180) -> str:
+    """Connects to the in-cluster Jaeger MCP server over SSE and executes query_service_traces."""
+    async with sse_client(MCP_SERVER_URL) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            result = await session.call_tool(
+                "query_service_traces",
+                arguments={
+                    "service": service,
+                    "limit": limit,
+                    "lookback_seconds": lookback_seconds
+                }
+            )
+            text_blocks = [c.text for c in result.content if hasattr(c, "text")]
+            return "\n".join(text_blocks) if text_blocks else "No telemetry returned by MCP server."
 
-        params = urllib.parse.urlencode({
-            "service": service,
-            "limit": limit,
-            "start": start_time_us,
-            "end": end_time_us
-        })
-        url = f"{JAEGER_URL}/api/traces?{params}"
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        
-        with urllib.request.urlopen(req, timeout=10) as response:
-            if response.status != 200:
-                return f"Failed to retrieve traces: HTTP {response.status}"
-            data = json.loads(response.read().decode())
-
-        traces = data.get("data", [])
-        if not traces:
-            return f"No traces found for service '{service}' in the last {lookback_seconds}s."
-
-        summary = []
-        for trace_obj in traces:
-            trace_id = trace_obj.get("traceID")
-            for s in trace_obj.get("spans", []):
-                duration_ms = s.get("duration", 0) / 1000.0
-                op_name = s.get("operationName", "unknown")
-                raw_tags = s.get("tags", [])
-                
-                # Capture slow spans or explicit error tags
-                has_error = any(
-                    (t.get("key") == "error" and t.get("value") in [True, "true", 1, "1"]) or
-                    (t.get("key") == "error.type") or
-                    (t.get("key") == "http.status_code" and int(t.get("value", 0)) >= 400)
-                    for t in raw_tags
-                )
-
-                if duration_ms > 1000 or has_error:
-                    summary.append(
-                        f"Trace ID: {trace_id} | Span: {op_name} | "
-                        f"Duration: {duration_ms:.2f}ms | Tags: {json.dumps(raw_tags)}"
-                    )
-        
-        return "\n".join(summary[:10]) if summary else f"All {len(traces)} traces in the last {lookback_seconds}s executed normally."
-    except Exception as e:
-        return f"Error querying Jaeger: {str(e)}"
+def query_jaeger_via_mcp(service: str, limit: int = 5, lookback_seconds: int = 180) -> str:
+    """Synchronous bridge allowing deterministic LangGraph nodes to invoke the async MCP client."""
+    return asyncio.run(_call_mcp_query_traces(service=service, limit=limit, lookback_seconds=lookback_seconds))
     
 # State Definition
 class SREState(TypedDict):
@@ -177,22 +151,23 @@ def dispatcher_node(state: SREState) -> dict:
     }
 
 def troubleshooter_node(state: SREState) -> dict:
+    """Investigate Jaeger traces via the in-cluster MCP Server and generate the final RCA report."""
     incident_id = state["incident_id"]
     triage_summary = state["triage_summary"]
     services = state["impacted_services"]
     
-    print(f"🔍 [Troubleshooter Node] Analyzing Jaeger traces for: {', '.join(services)}...")
+    print(f"🔍 [Troubleshooter Node] Querying Jaeger MCP Server for: {', '.join(services)}...")
 
     telemetry_dump = []
     for svc in services:
-        traces = query_jaeger(service=svc, limit=5, lookback_seconds=3600)
-        telemetry_dump.append(f"=== Service: {svc} ===\n{traces}")
+        traces = query_jaeger_via_mcp(service=svc, limit=5, lookback_seconds=180)
+        telemetry_dump.append(f"=== Service: {svc} (via In-Cluster MCP) ===\n{traces}")
     telemetry_str = "\n\n".join(telemetry_dump)
 
     prompt = [
         SystemMessage(content=(
-            "You are a senior Site Reliability Engineer specializing in distributed tracing. "
-            "Synthesize an incident Root Cause Analysis (RCA) report in Markdown with sections:\n"
+            "You are a senior Site Reliability Engineer specializing in distributed tracing and microservice root cause analysis. "
+            "Synthesize an incident Root Cause Analysis (RCA) report formatted in Markdown with the following sections:\n"
             "- Executive Summary\n"
             "- Telemetry Analysis (include trace IDs, latency metrics, and error spans)\n"
             "- Root Cause Identification\n"

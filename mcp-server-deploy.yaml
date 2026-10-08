@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger-mcp
+  namespace: default
+  labels:
+    app: jaeger-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger-mcp
+  template:
+    metadata:
+      labels:
+        app: jaeger-mcp
+    spec:
+      containers:
+        - name: mcp-server
+          image: jaeger-mcp-server:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: JAEGER_URL
+              value: "http://jaeger-standalone.default.svc.cluster.local:16686"
+            - name: FASTMCP_HOST
+              value: "0.0.0.0"
+            - name: FASTMCP_PORT
+              value: "8000"
+          ports:
+            - containerPort: 8000
+              name: sse
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-mcp
+  namespace: default
+spec:
+  selector:
+    app: jaeger-mcp
+  ports:
+    - name: sse
+      port: 8000
+      targetPort: 8000

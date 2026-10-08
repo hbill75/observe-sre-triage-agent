@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# bootstrap.sh - Sets up the lightweight AI SRE Observability Demo environment
+# bootstrap.sh - Sets up Kind cluster, HotROD, Jaeger, Qdrant, and in-cluster MCP
 set -euo pipefail
 
 echo "=========================================================="
-echo "🚀 Bootstrapping AI SRE Observability Testbed (HotROD)"
+echo "🚀 Bootstrapping AI SRE Observability Testbed (HotROD + MCP)"
 echo "=========================================================="
 
 # 1. Check prerequisites
@@ -14,14 +14,16 @@ for cmd in kind kubectl helm docker; do
   fi
 done
 
-# 2. Verify persistent OpenLIT stack is running in OrbStack / Docker
+# 2. Verify persistent OpenLIT stack is already running in OrbStack / Docker
 echo "🔍 Checking OpenLIT stack in OrbStack..."
-if ! docker ps --format '{{.Names}}' | grep -qE "^(openlit|openlit-server)$"; then
-    echo "❌ Error: OpenLIT is not running in OrbStack."
-    echo "   Please start it via docker compose first, then re-run bootstrap.sh."
-    exit 1
+OPENLIT_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E "^(openlit|openlit-server)$" | head -n1)
+
+if [ -z "${OPENLIT_CONTAINER}" ]; then
+  echo "❌ Error: OpenLIT is not running in OrbStack."
+  echo "   Please run './openlit-bootstrap.sh' first, then re-run bootstrap.sh."
+  exit 1
 fi
-echo "✅ Persistent OpenLIT stack detected."
+echo "✅ Persistent OpenLIT stack detected: ${OPENLIT_CONTAINER}"
 
 # 3. Create the Kind cluster
 echo "📦 Checking Kubernetes cluster 'sre-demo'..."
@@ -32,10 +34,10 @@ else
 fi
 
 # 4. Bridge OpenLIT to Kind & Register In-Cluster DNS
-echo "🔗 Bridging OpenLIT container to Kind Docker network..."
-docker network connect kind openlit-server 2>/dev/null || true
+echo "🔗 Bridging OpenLIT container (${OPENLIT_CONTAINER}) to Kind Docker network..."
+docker network connect kind "${OPENLIT_CONTAINER}" 2>/dev/null || true
 
-OPENLIT_KIND_IP=$(docker inspect -f '{{with index .NetworkSettings.Networks "kind"}}{{.IPAddress}}{{end}}' openlit-server 2>/dev/null || true)
+OPENLIT_KIND_IP=$(docker inspect -f '{{with index .NetworkSettings.Networks "kind"}}{{.IPAddress}}{{end}}' "${OPENLIT_CONTAINER}" 2>/dev/null || true)
 if [ -n "$OPENLIT_KIND_IP" ]; then
   kubectl apply -f - <<EOF
 apiVersion: v1
@@ -94,19 +96,29 @@ if [ ! -f "jaeger-deploy.yaml" ]; then
 fi
 kubectl apply -f jaeger-deploy.yaml
 
-# 9. Deploy Jaeger HotROD
+# 9. Deploy Jaeger HotROD Microservices
 echo "🚗 Deploying Jaeger HotROD Microservices..."
+if [ ! -f "hotrod-deploy.yaml" ]; then
+  echo "❌ Error: hotrod-deploy.yaml missing."
+  exit 1
+fi
 kubectl apply -f hotrod-deploy.yaml
-
-# Wait for HotROD pod readiness
 kubectl rollout status deployment/hotrod -n default --timeout=60s
+
+# 10. Build, Load, and Deploy Jaeger In-Cluster MCP Server
+echo "🛠️  Building and loading Jaeger MCP Server image into Kind..."
+if [ ! -f "Dockerfile.mcp" ] || [ ! -f "mcp-server-deploy.yaml" ]; then
+  echo "❌ Error: Dockerfile.mcp or mcp-server-deploy.yaml missing."
+  exit 1
+fi
+docker build -t jaeger-mcp-server:latest -f Dockerfile.mcp .
+kind load docker-image jaeger-mcp-server:latest --name sre-demo
+
+echo "🚀 Deploying In-Cluster Jaeger MCP Server..."
+kubectl apply -f mcp-server-deploy.yaml
+kubectl rollout status deployment/jaeger-mcp -n default --timeout=60s
 
 echo "=========================================================="
 echo "✅ Environment Bootstrap Complete!"
 echo "=========================================================="
-echo "Port-Forward Commands:"
-echo "  1. HotROD Rides UI:     kubectl port-forward svc/hotrod 8080:8080 -n default"
-echo "  2. Jaeger UI & API:     kubectl port-forward svc/jaeger-standalone 16686:16686 -n default"
-echo "  3. Qdrant Vector DB:    kubectl port-forward svc/qdrant 6333:6333 -n observability"
-echo "  4. OpenLIT Dashboard:   http://localhost:3000 (Native in OrbStack)"
-echo "=========================================================="
+echo "Start port-forwards by running: ./port_forwards.sh"
