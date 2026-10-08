@@ -8,8 +8,8 @@ A local reference implementation demonstrating autonomous Site Reliability Engin
 
 ```mermaid
 flowchart TD
-    subgraph Host_Environment["Host Environment - Laptop / OrbStack"]
-        direction LR
+    subgraph Host_Environment [Host Environment - Laptop / OrbStack]
+        direction TB
         AG["LangGraph SRE Agents<br>Dispatcher and Troubleshooter<br>Google Gemini"]
         OL["OpenLIT Server<br>Dashboard 3000, OTLP 4318"]
         CH[("ClickHouse DB")]
@@ -18,17 +18,16 @@ flowchart TD
         OL --- CH
     end
 
-    subgraph K8s_Cluster["Kind Kubernetes Cluster - sre-demo"]
-        direction LR
+    subgraph K8s_Cluster [Kind Kubernetes Cluster - sre-demo]
+        direction TB
         QD[("Qdrant Vector DB<br>INC-2001 and RB-010")]
         MCP["Jaeger MCP Server<br>FastMCP SSE Service"]
-        HR["HotROD Microservices<br>frontend, customer, driver, route"]
         JG["Standalone Jaeger<br>Trace Storage and Query API"]
+        HR["HotROD Microservices<br>frontend, customer, driver, route"]
 
         QD ~~~ MCP
-        MCP ~~~ HR
-        HR -->|"1. Emits Spans (OTLP)"| JG
         MCP -->|"4. Query Traces (Cluster DNS)"| JG
+        HR -->|"1. Emits Spans (OTLP)"| JG
     end
 
     AG -->|"2. RAG Search"| QD
