@@ -8,39 +8,30 @@ A local reference implementation demonstrating autonomous Site Reliability Engin
 
 ```mermaid
 flowchart TD
-    subgraph Persistent_Host ["Persistent Host Engine (Docker / OrbStack)"]
-        OL["OpenLIT Server<br>Port 3000 UI / Port 4318 OTLP"]
+    subgraph Host_Observability ["Persistent Observability (Docker / OrbStack)"]
+        OL["OpenLIT Server<br>(Dashboard: 3000 | OTLP: 4318)"]
         CH[("ClickHouse DB")]
         OL --- CH
     end
 
-    subgraph Host_Runtime ["Agent Runtime (Python / Host)"]
+    subgraph Agent_Runtime ["AI Agent Runtime (Host / Python)"]
         AG["LangGraph SRE Agents<br>(Dispatcher & Troubleshooter)<br>Google Gemini"]
-        EM["FastEmbed<br>(BAAI/bge-small-en-v1.5)"]
-        AG -.->|"Agent Traces & Spans"| OL
+        AG -.->|"Agent Traces & Token Metrics"| OL
     end
 
     subgraph K8s_Cluster ["Kind Kubernetes Cluster (sre-demo)"]
         HR["HotROD Microservices<br>(frontend, customer, driver, route)"]
-        JG["Standalone Jaeger<br>UI: 16686 | OTLP: 4318"]
-        QD[("Qdrant Vector DB<br>Port 6333<br>(INC-2001 & RB-010)")]
-        MCP["Jaeger MCP Server<br>(FastMCP SSE Port 8000)"]
+        JG["Standalone Jaeger<br>(Trace Storage & Query API)"]
+        MCP["Jaeger MCP Server<br>(FastMCP SSE Service)"]
+        QD[("Qdrant Vector DB<br>(INC-2001 & RB-010)")]
 
-        HR -->|"OTLP Spans"| JG
-        MCP -->|"Cluster DNS Query<br>jaeger-standalone:16686"| JG
+        HR -->|"1. Emits Failure Spans (OTLP)"| JG
+        MCP <-->|"3. Queries & Filters Spans<br>(Cluster DNS jaeger-standalone:16686)"| JG
     end
 
-    subgraph Tunnel_Bridge ["kubectl port-forward (port_forwards.sh)"]
-        PF1["localhost:8080 -> svc/hotrod:8080"]
-        PF2["localhost:16686 -> svc/jaeger-standalone:16686"]
-        PF3["localhost:6333 -> svc/qdrant:6333"]
-        PF4["localhost:8000 -> svc/jaeger-mcp:8000"]
-    end
-
-    AG -->|"Vector Search"| PF3
-    AG -->|"MCP Tool Calls (SSE)"| PF4
-
-```
+    AG -->|"RAG Search (Tickets & Runbooks)"| QD
+    AG -->|"2. MCP Tool Call (SSE): query_service_traces"| MCP
+    MCP -->|"4. Returns Sanitized Error Telemetry"| AG
 
 ---
 
