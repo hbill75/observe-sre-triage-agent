@@ -8,32 +8,36 @@ A local reference implementation demonstrating autonomous Site Reliability Engin
 
 ```mermaid
 flowchart TD
-    subgraph Host_Environment [Host Environment - Laptop / OrbStack]
-        direction LR
-        AG["LangGraph SRE Agents<br>Dispatcher and Troubleshooter<br>Google Gemini"]
-        OL["OpenLIT Server<br>Dashboard 3000, OTLP 4318"]
-        CH[("ClickHouse DB")]
+    subgraph Ephemeral_Kind ["Ephemeral Kind Cluster (sre-demo)"]
+        direction TB
+        HR["HotROD Microservices<br>(frontend, customer, driver, route)"]
+        JG["Jaeger Standalone<br>Workload Traces"]
+        MCP["Jaeger MCP Server<br>(FastMCP SSE Port 8000)"]
+        QD[("Qdrant Vector DB<br>Tickets and Runbooks")]
 
-        AG -. "Agent Metrics and Spans" .-> OL
-        OL --- CH
-        AG ~~~ OL ~~~ CH
+        HR -->|"Distributed Traces (OTLP)"| JG
+        MCP -->|"Internal Query (16686)"| JG
     end
 
-    subgraph K8s_Cluster [Kind Kubernetes Cluster - sre-demo]
-        direction LR
-        QD[("Qdrant Vector DB<br>INC-2001 and RB-010")]
-        MCP["Jaeger MCP Server<br>FastMCP SSE Service"]
-        JG["Standalone Jaeger<br>Trace Storage and Query API"]
-        HR["HotROD Microservices<br>frontend, customer, driver, route"]
+    subgraph Agent_Runtime ["Agent Runtime (LangGraph)"]
+        direction TB
+        AG["Dispatcher and Troubleshooter Nodes<br>Google Gemini 3.8 Flash"]
+        SDK["OpenLIT SDK"]
 
-        QD ~~~ MCP ~~~ JG ~~~ HR
-        HR -->|"1. Emits Spans (OTLP)"| JG
-        MCP -->|"4. Query Traces (Cluster DNS)"| JG
+        AG --> SDK
     end
 
-    AG -->|"2. RAG Search"| QD
-    AG -->|"3. MCP Tool Call (SSE)"| MCP
-    MCP -->|"5. Sanitized Error Spans"| AG
+    subgraph Persistent_Obs ["Persistent Observability (Docker / OrbStack)"]
+        direction TB
+        OL["OpenLIT Server<br>Port 3000 UI / 4318 OTLP"]
+        CH[("ClickHouse DB<br>Traces and Metrics")]
+
+        OL --> CH
+    end
+
+    AG -->|"Vector RAG (Port 6333)"| QD
+    AG -->|"Trace Analysis (MCP Port 8000)"| MCP
+    SDK -->|"Agent Telemetry (Port 4318)"| OL
 ```
 
 ---
