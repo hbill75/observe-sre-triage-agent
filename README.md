@@ -1,6 +1,8 @@
 # Autonomous SRE Incident Triage Agent (MCP & OpenTelemetry)
 
-A local reference implementation demonstrating autonomous Site Reliability Engineering (SRE) incident triage. The system investigates microservice failures in Jaeger HotROD using a LangGraph multi-agent workflow powered by Google Gemini. The agent retrieves approved runbooks from Qdrant vector memory, queries distributed traces via an in-cluster Model Context Protocol (MCP) server over Server-Sent Events (SSE), and records full agent reasoning and token metrics into OpenLIT.
+An autonomous Site Reliability Engineering (SRE) incident response testbed combining **LangGraph**, **Google Gemini**, **OpenTelemetry**, **Jaeger**, **Qdrant**, and the **Model Context Protocol (MCP)**.
+
+The agent investigates microservice outages in Jaeger HotROD by retrieving approved operating runbooks from Qdrant vector memory, querying distributed trace telemetry via an in-cluster FastMCP server over Server-Sent Events (SSE), synthesizing root cause analysis (RCA) reports, and exporting full agent execution metrics to OpenLIT and ClickHouse.
 
 ---
 
@@ -21,7 +23,7 @@ flowchart TD
 
     subgraph Agent_Runtime ["Agent Runtime (LangGraph)"]
         direction TB
-        AG["Dispatcher and Troubleshooter Nodes<br>Google Gemini 3.8 Flash"]
+        AG["Dispatcher and Troubleshooter Nodes<br>Google Gemini"]
         SDK["OpenLIT SDK"]
 
         AG --> SDK
@@ -38,6 +40,7 @@ flowchart TD
     AG -->|"Vector RAG (Port 6333)"| QD
     AG -->|"Trace Analysis (MCP Port 8000)"| MCP
     SDK -->|"Agent Telemetry (Port 4318)"| OL
+
 ```
 
 ---
@@ -46,25 +49,25 @@ flowchart TD
 
 ```text
 .
-├── openlit-bootstrap.sh         # Starts persistent OpenLIT & ClickHouse in Docker/OrbStack
-├── docker-compose.openlit.yaml  # OpenLIT & ClickHouse multi-container configuration
-├── openlit-config/              # OpenLIT & ClickHouse initialization assets
+├── openlit-bootstrap.sh         # Boots persistent OpenLIT & ClickHouse in Docker/OrbStack
+├── docker-compose.openlit.yaml  # Multi-container Compose manifest for OpenLIT & ClickHouse
+├── openlit-config/              # OpenLIT & ClickHouse configuration assets
 │   ├── clickhouse-config.xml
 │   ├── clickhouse-init.sh
 │   └── otel-collector-config.yaml
-├── bootstrap.sh                 # Provisions Kind cluster, builds Jaeger MCP image, deploys HotROD & Qdrant
-├── cleanup.sh                   # Tears down Kind cluster and background port-forwards
-├── port_forwards.sh             # Establishes background tunnels (HotROD, Jaeger UI, Qdrant, MCP SSE)
-├── simulate_errors.sh           # Generates HotROD failure traffic (customer ID 99999)
+├── bootstrap.sh                 # Builds Kind cluster, deploys HotROD, Jaeger, Qdrant, & Jaeger MCP
+├── cleanup.sh                   # Destroys Kind cluster and terminates background tunnels
+├── demo_setup.sh                # Automates iTerm windows, .venv, .env, vector seeding, & failure traffic
+├── port_forwards.sh             # Exposes in-cluster services (HotROD, Jaeger, Qdrant, MCP SSE)
+├── simulate_errors.sh           # Generates HotROD error traffic (Customer ID 99999)
 ├── Dockerfile.mcp               # Container build file for the in-cluster FastMCP server
-├── mcp_server.py                # In-cluster FastMCP server exposing Jaeger trace tools
+├── mcp_server.py                # FastMCP server exposing Jaeger trace query tools over SSE
 ├── mcp-server-deploy.yaml       # Kubernetes Deployment and Service for the Jaeger MCP server
 ├── jaeger-deploy.yaml           # Standalone Jaeger All-in-One deployment manifest
-├── hotrod-deploy.yaml           # HotROD microservices deployment manifest
-├── seed_qdrant.py               # Vector DB initialization: seeds ticket INC-2001 & runbook RB-010
-├── sre_agents.py                # LangGraph state machine with MCP client integration
-├── requirements.txt             # Python dependencies
-└── .env                         # API keys and local endpoint configurations
+├── hotrod-deploy.yaml           # Jaeger HotROD microservices deployment manifest
+├── seed_qdrant.py               # Vector DB ingestion: indexes INC-2001 and RB-010 via FastEmbed
+├── sre_agents.py                # LangGraph state machine, agent nodes, and MCP client
+└── requirements.txt             # Python dependencies for agent runtime
 
 ```
 
@@ -77,6 +80,7 @@ flowchart TD
 
 * **CLI Tools:** `kind`, `kubectl`, `helm`
 
+* **Terminal:** macOS [iTerm2](https://iterm2.com/) (required by `demo_setup.sh` automation)
 * **Python:** 3.11+
 
 
@@ -85,112 +89,118 @@ flowchart TD
 
 ---
 
-## Quickstart Execution Sequence
+## Quickstart Setup
 
-### 1. Launch Persistent AI Observability (OpenLIT)
+### 1. Clone the Repository
 
-Start ClickHouse and OpenLIT in Docker/OrbStack so telemetry persists across Kubernetes rebuilds:
+Clone the repository and enter the directory:
 
 ```bash
-chmod +x openlit-bootstrap.sh bootstrap.sh port_forwards.sh cleanup.sh simulate_errors.sh
+git clone https://github.com/hbill75/observe-sre-triage-agent.git
+cd observe-sre-triage-agent
+
+```
+
+Make all shell scripts executable:
+
+```bash
+chmod +x openlit-bootstrap.sh bootstrap.sh demo_setup.sh cleanup.sh port_forwards.sh simulate_errors.sh
+
+```
+
+### 2. Start Persistent AI Observability (OpenLIT)
+
+Start the ClickHouse and OpenLIT containers in Docker/OrbStack so telemetry persists across Kubernetes cluster restarts:
+
+```bash
 ./openlit-bootstrap.sh
 
 ```
 
-Verify the web dashboard is accessible at `http://localhost:3000`.
+Verify the OpenLIT web dashboard is accessible at `http://localhost:3000` before proceeding.
 
-### 2. Bootstrap the Kubernetes Cluster & Workloads
+### 3. Bootstrap the Kubernetes Cluster
 
-Spin up the Kind cluster, bridge OpenLIT DNS, install Qdrant and Jaeger, build the in-cluster MCP server image, and deploy HotROD:
+Spin up the Kind cluster, bridge OpenLIT networking, deploy Qdrant and standalone Jaeger, build the FastMCP server container image, and deploy HotROD:
 
 ```bash
 ./bootstrap.sh
 
 ```
 
-### 3. Establish Port-Forwards
+### 4. Run Automated Demo Setup
 
-Start background tunnels to expose in-cluster services to localhost:
+Run the demo setup script to automate background tunnels and prepare the agent environment:
 
 ```bash
-./port_forwards.sh
+./demo_setup.sh
 
 ```
 
-* HotROD UI: `http://localhost:8080`
+This script automatically:
 
-* Jaeger Web UI: `http://localhost:16686`
-
-* Jaeger MCP Server: `http://localhost:8000/sse`
-* Qdrant Vector DB: `http://localhost:6333`
+1. Spawns an iTerm window to run `./port_forwards.sh`.
 
 
-### 4. Setup Python Environment & Secrets
+2. Configures the `.venv` Python virtual environment and installs all dependencies.
 
-Create a virtual environment and install project dependencies:
+
+3. Configures `.env` and securely prompts for your Google Gemini API key.
+
+
+4. Polls the Qdrant port-forward until reachable and executes `seed_qdrant.py` (indexing ticket INC-2001 and runbook RB-010).
+
+
+5. Spawns a second iTerm window running `./simulate_errors.sh` to generate live HotROD error spans.
+
+
+6. Displays the dashboard access links in the terminal.
+
+
+
+---
+
+## Running the SRE Agent
+
+Because `./demo_setup.sh` manages its setup within a child subshell, explicitly activate the virtual environment in your current terminal session, then trigger the agent workflow:
 
 ```bash
-python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-
-```
-
-Create a `.env` file in the project root:
-
-```bash
-cat << 'EOF' > .env
-GEMINI_API_KEY="your_gemini_api_key_here"
-OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
-OPENLIT_ENVIRONMENT="development"
-MCP_SERVER_URL="http://localhost:8000/sse"
-QDRANT_URL="http://localhost:6333"
-EOF
-
-```
-
-### 5. Seed Vector Knowledge Base
-
-Index historical incident INC-2001 and standard operating runbook RB-010 into Qdrant:
-
-```bash
-python3 seed_qdrant.py
-
-```
-
-### 6. Generate Failure Traffic in HotROD
-
-Inject failing ride requests to emit HTTP 404/500 error spans to Jaeger:
-
-```bash
-./simulate_errors.sh
-
-```
-
-*(Alternatively, execute a single failure: `curl -s "http://localhost:8080/dispatch?customer=99999"`)*
-
-### 7. Run the Autonomous SRE Agent
-
-Trigger the LangGraph triage workflow:
-
-```bash
 python3 sre_agents.py
 
 ```
 
-The agent will:
+### What Happens During Execution
 
-1. Query Qdrant for incident INC-2001 and runbook RB-010 to determine impacted services (`frontend`, `customer`).
-
-
-2. Connect to the in-cluster MCP server over SSE (`http://localhost:8000/sse`) and invoke `query_service_traces`.
-3. Filter out healthy spans and parse failing trace IDs and error tags.
-4. Output a formatted Root Cause Analysis (RCA) report in your terminal with direct Jaeger trace URLs.
+1. **Dispatcher Agent:** Queries Qdrant for incident `INC-2001` and runbook `RB-010` to triage symptoms and identify impacted microservices (`frontend`, `customer`).
 
 
-5. Stream agent token metrics and execution graphs to OpenLIT at `http://localhost:3000`.
+2. **Troubleshooter Agent:** Connects over SSE to the in-cluster MCP server (`http://localhost:8000/sse`) and invokes `query_service_traces`.
+3. **In-Cluster FastMCP Server:** Queries Jaeger via internal Kubernetes DNS (`jaeger-standalone.default.svc.cluster.local:16686`), filters out healthy spans, sanitizes demo tags, and returns failing trace spans.
+4. **Root Cause Analysis (RCA):** Gemini analyzes the live spans and runbook guidelines to print a structured RCA report containing duration metrics, error tags, and direct Jaeger trace URLs.
+5. **Observability Capture:** OpenLIT records the multi-agent graph execution, LLM token metrics, latency, and MCP tool invocations to ClickHouse.
 
 
+
+---
+
+## Interactive Access Points
+
+| Service | Endpoint | Description |
+| --- | --- | --- |
+| **HotROD UI** | [http://localhost:8080](http://localhost:8080) | Microservices rides storefront (generate manual ride traffic)
+
+ |
+| **Jaeger Web UI** | [http://localhost:16686](http://localhost:16686) | Distributed trace waterfalls and span error inspector
+
+ |
+| **Jaeger MCP Server** | [http://localhost:8000/sse](http://localhost:8000/sse) | FastMCP Server-Sent Events endpoint for agent tool calls |
+| **Qdrant Vector DB** | [http://localhost:6333/dashboard](http://localhost:6333/dashboard) | Vector database dashboard for indexed tickets and runbooks
+
+ |
+| **OpenLIT Dashboard** | [http://localhost:3000](http://localhost:3000) | GenAI telemetry, agent graphs, token spend, and trace costs
+
+ |
 
 ---
 
@@ -203,7 +213,7 @@ To delete the Kind cluster and terminate all background port-forward tunnels whi
 
 ```
 
-To permanently stop OpenLIT and delete persistent ClickHouse volumes:
+To shut down OpenLIT and delete ClickHouse database storage volumes:
 
 ```bash
 docker compose -f docker-compose.openlit.yaml down -v
