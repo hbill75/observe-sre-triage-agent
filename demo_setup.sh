@@ -24,11 +24,33 @@ end tell
 EOF
 
 # ------------------------------------------------------------------------------
-# 2. Virtual Environment & Dependencies
+# 2. Virtual Environment & Dependencies (Targeting Python 3.11+)
 # ------------------------------------------------------------------------------
-echo "🐍 Configuring Python virtual environment..."
+echo "🐍 Locating modern Python (>= 3.10)..."
+PY_BIN=""
+if command -v python3.11 >/dev/null 2>&1; then
+    PY_BIN="$(command -v python3.11)"
+elif command -v brew >/dev/null 2>&1 && [ -x "$(brew --prefix python@3.11 2>/dev/null)/bin/python3.11" ]; then
+    PY_BIN="$(brew --prefix python@3.11)/bin/python3.11"
+elif command -v python3.12 >/dev/null 2>&1; then
+    PY_BIN="$(command -v python3.12)"
+elif command -v python3 >/dev/null 2>&1; then
+    PY_VER=$(python3 -c "import sys; print(sys.version_info >= (3, 10))" 2>/dev/null || echo "False")
+    if [ "$PY_VER" = "True" ]; then
+        PY_BIN="$(command -v python3)"
+    fi
+fi
+
+if [ -z "$PY_BIN" ]; then
+    echo "❌ Error: Python 3.10+ (preferably Python 3.11) is required."
+    echo "Please install it via Homebrew: brew install python@3.11"
+    exit 1
+fi
+
+echo "✔ Using Python binary: $PY_BIN ($($PY_BIN --version))"
+
 if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
+    "$PY_BIN" -m venv .venv
     echo "✔ Created .venv"
 fi
 
@@ -36,7 +58,7 @@ fi
 source .venv/bin/activate
 
 echo "📦 Installing and upgrading dependencies from requirements.txt..."
-pip install --quiet --upgrade pip
+pip install --quiet --upgrade pip setuptools wheel
 pip install --quiet -r requirements.txt
 echo "✔ Dependencies installed."
 
@@ -124,5 +146,6 @@ echo "   • OpenLIT Dashboard: http://localhost:3000"
 echo "----------------------------------------------------------"
 echo "Run the agent triage workflow in this window:"
 echo ""
+echo "    source .venv/bin/activate"
 echo "    python3 sre_agents.py"
 echo "=========================================================="
